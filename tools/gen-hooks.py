@@ -30,9 +30,16 @@ on top of the shipped 13-event scope (or the 26-event superset with
 Distribution model (recommended: shared-key fleet package):
 
 - Pass --server-url and the company-wide shared --api-key to bake both into
-  every event's env block. One identical package for everyone. The key only
+  every event's env block AND into hooks/config.json (same directory).
+  One identical package for everyone. The key only
   authenticates the upload endpoint; attribution comes from the enterprise
   email already carried inside each record, so --user-id stays unset.
+- hooks/config.json is the effective delivery channel: the Qoder hook
+  runner does not inject the hooks.json per-event env block (verified on
+  1.1.4 - every env-backed setting ran at its built-in default), while the
+  collector reads config.json from its own directory with zero env. The
+  env block stays as documentation and future-proofing; env values still
+  win over the file for local overrides and tests.
 - Optional per-machine override: when the env identity values are empty the
   collector falls back to the per-machine credentials file
   (~/.qoder/log-credentials.json, override with QODER_LOG_CREDENTIALS_FILE)
@@ -159,9 +166,12 @@ HOOK_CONFIG = {
 }
 
 
-def build(server_url="", api_key="", user_id="", ca_certs="", upload_mode="legacy",
-          upload_interval_sec=60, local_retention_days=0, batch_max_lines=2000,
-          batch_max_mb=6, all_events=False):
+def hook_env(server_url="", api_key="", user_id="", ca_certs="", upload_mode="legacy",
+             upload_interval_sec=60, local_retention_days=0, batch_max_lines=2000,
+             batch_max_mb=6):
+    """The deployment env dict shared by hooks.json (per-event env block)
+    and hooks/config.json (the bundled file the collector actually reads).
+    """
     env = dict(HOOK_CONFIG)
     env.update({
         "QODER_LOG_SERVER_URL": server_url,
@@ -174,6 +184,15 @@ def build(server_url="", api_key="", user_id="", ca_certs="", upload_mode="legac
         "QODER_LOG_BATCH_MAX_MB": str(batch_max_mb),
         "NODE_EXTRA_CA_CERTS": ca_certs,
     })
+    return env
+
+
+def build(server_url="", api_key="", user_id="", ca_certs="", upload_mode="legacy",
+          upload_interval_sec=60, local_retention_days=0, batch_max_lines=2000,
+          batch_max_mb=6, all_events=False):
+    env = hook_env(server_url, api_key, user_id, ca_certs, upload_mode,
+                   upload_interval_sec, local_retention_days, batch_max_lines,
+                   batch_max_mb)
     # Default: the shipped 13-event internal-audit scope in delivery order;
     # --all-events: the full 26-event superset in EVENTS order.
     event_names = list(EVENTS) if all_events else SHIPPED_EVENTS
@@ -230,7 +249,8 @@ def parse_args():
     parser.add_argument("--all-events", action="store_true",
                         help="emit the full 26-event superset instead of the shipped 13-event internal-audit scope")
     parser.add_argument("--output", default=None,
-                        help="output file path (default: plugin/hooks/hooks.json in the repo root)")
+                        help="output file path (default: plugin/hooks/hooks.json in the repo root); "
+                             "hooks/config.json is always written next to it")
     return parser.parse_args()
 
 
@@ -244,7 +264,19 @@ def main():
                     all_events=args.all_events)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    # The bundled config file: same deployment keys, written next to
+    # hooks.json because the collector reads it from its own directory
+    # (the hook runner does not inject the env block). Stays byte-identical
+    # to the per-event env values by construction.
+    config = hook_env(args.server_url, args.api_key, args.user_id, args.ca_certs, args.upload_mode,
+                      upload_interval_sec=args.upload_interval_sec,
+                      local_retention_days=args.local_retention_days,
+                      batch_max_lines=args.batch_max_lines, batch_max_mb=args.batch_max_mb)
+    config_target = target.parent / "config.json"
+    config_target.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    filled = sum(1 for v in config.values() if v)
     print(f"wrote {target} ({len(payload['hooks'])} events)")
+    print(f"wrote {config_target} ({filled} non-empty values)")
 
 
 if __name__ == "__main__":

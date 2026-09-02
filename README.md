@@ -61,14 +61,15 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 
 ## 插件
 
-`plugin/` 是 Qoder 插件「操作日志采集器」（当前版本 1.1.0），通过 13 个 hook 事件覆盖会话生命周期、用户提示、agent 最终输出、工具调用与权限决策；凭据脱敏默认开启，可采集 transcript 中的 credits / tokens。
+`plugin/` 是 Qoder 插件「操作日志采集器」（当前版本 1.1.5），通过 13 个 hook 事件覆盖会话生命周期、用户提示、agent 最终输出、工具调用与权限决策；凭据脱敏默认开启，可采集 transcript 中的 credits / tokens。
 
 - **仅本地模式**：`QODER_LOG_SERVER_URL` 留空时只写本地 JSON Lines 日志（按天分割），不上报。
 - **上报模式**：`QODER_LOG_UPLOAD_MODE=legacy`（逐条 push + outbox 重试，默认）或 `cursor`（offset 跟踪 gzip 批量上传）。
 - **服务端异常不影响 Qoder 使用**（收集器视为可选增强，任何故障只降级采集、不阻塞 agent）：每次 push 带 socket 超时 + 硬超时（覆盖 DNS 解析与 TCP connect 阶段，默认 5s 档）；传输失败/超时/5xx/429 触发共享指数退避（`~/.qoder/logs/.request-logger/upload-state.json` 中 `consecutiveFailures`/`nextAttemptAtMs`，1min→2min→5min→15min→30min→1h 封顶），退避期间 hook 调用**零网络开销**（记录落 outbox / 本地日文件，恢复后自动补传，服务端去重）；Key 被拒（401/403）仍走既有 24h 熔断。单次 2xx 即清除退避自动恢复。
-- **统一分发模式（推荐）**：`gen-hooks.py --server-url ... --api-key qk_<共享Key>` 把 Server 地址与全公司共享 Key 直接写进统一包，一个包全员安装；归因不依赖 Key（以记录内 `email` 为准）。本机凭据文件 `~/.qoder/log-credentials.json`（`QODER_LOG_CREDENTIALS_FILE` 可覆盖路径）仅作为单机覆盖的可选兜底（见 runbook §4.5）。
+- **统一分发模式（推荐）**：`gen-hooks.py --server-url ... --api-key qk_<共享Key>` 把 Server 地址与全公司共享 Key 直接写进统一包（hooks.json 的 env 块 + `plugin/hooks/config.json`），一个包全员安装；归因不依赖 Key（以记录内 `email` 为准）。本机凭据文件 `~/.qoder/log-credentials.json`（`QODER_LOG_CREDENTIALS_FILE` 可覆盖路径）仅作为单机覆盖的可选兜底（见 runbook §4.5）。
+- **配置必须经 config.json 而非 env 块**：Qoder hook 运行器**不注入** hooks.json 各事件的 `env` 块（1.1.4 实测：所有 env 配置均以默认值运行，插件静默处于仅本地模式）。收集器启动时读取同目录 `plugin/hooks/config.json`（随分发包分发，零 env 可用），配置优先级：**环境变量 > config.json > 内置默认值 > 凭据文件**；`QODER_LOG_DIR` 仅接受环境变量（机器本地状态，不随包分发）；config.json 缺失/损坏时静默回退到纯 env 行为。
 
-关键环境变量（配置于 `plugin/hooks/hooks.json` 各事件的 `env` 块）：
+关键配置项（由 `gen-hooks.py` 写入 `plugin/hooks/config.json` 随分发包生效；同名环境变量可覆盖，用于本机覆盖与测试）：
 
 | 变量 | 说明 |
 | --- | --- |
@@ -83,7 +84,7 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 | `QODER_LOG_REDACT` | `1` 开启凭据脱敏 |
 | `QODER_LOG_LOCAL_RETENTION_DAYS` | 本地日志保留天数（`0` = 不清理） |
 
-`hooks.json` 由 `tools/gen-hooks.py` 生成；分发产物为根目录 zip（构建产物，不入库）。
+`hooks.json` 与 `hooks/config.json` 由 `tools/gen-hooks.py` 生成（config.json 与 hooks.json 同参数同步产出）；分发产物为根目录 zip（构建产物，不入库）。
 
 ## 验证
 

@@ -228,6 +228,30 @@ EOF
       "$CUR_DIR/.request-logger/upload-state.json" "requests_$DAY.jsonl")
     [ "$CUR_OFFSET" = "$CUR_SIZE" ]; check "upload e2e cursor: offset advanced to file size ($CUR_OFFSET/$CUR_SIZE)" $?
     [ -s "$CUR_DIR/.request-logger/logger-error.log" ]; [ $? -ne 0 ]; check "upload e2e cursor: no collector error" $?
+
+    # c) bundled config.json channel: the hook runner does not inject the
+    #    hooks.json env block, so the fleet package carries its settings in
+    #    hooks/config.json next to the collector. Replay that exact shape -
+    #    a hook dir holding the real collector plus a populated config.json,
+    #    invoked with NO QODER_LOG_* env at all (QODER_LOG_DIR stays env-only
+    #    machine state).
+    CFG_DIR="$UPWORK/bundled"
+    mkdir -p "$CFG_DIR/hooks"
+    cp "$HOOK_DIR/log-request.js" "$HOOK_DIR/logger.sh" "$CFG_DIR/hooks/"
+    cat > "$CFG_DIR/hooks/config.json" <<EOF
+{"QODER_LOG_SERVER_URL":"http://127.0.0.1:$MOCK_PORT/api/logs","QODER_LOG_API_KEY":"qk_test123","QODER_LOG_UPLOAD_MODE":"cursor","QODER_LOG_UPLOAD_INTERVAL_SEC":"0","QODER_LOG_RAW":"0"}
+EOF
+    CFG_BASE=$(lines_in "$MOCK_OUT")
+    printf '%s' '{"hook_event_name":"SessionStart","session_id":"cfg-e2e","cwd":"/tmp","source":"startup","extra":{"user":{"email":"dev@example.com","uid":"019efd72-verify"}}}' \
+      | env QODER_LOG_DIR="$CFG_DIR/logs" sh "$CFG_DIR/hooks/logger.sh" >"$UPWORK/cfg.stdout" 2>"$UPWORK/cfg.stderr"
+    check "upload e2e config.json: wrapper exits 0" $?
+    [ ! -s "$UPWORK/cfg.stdout" ]; check "upload e2e config.json: no stdout" $?
+    wait_until_lines "$MOCK_OUT" $(( ${CFG_BASE:-0} + 1 ))
+    check "upload e2e config.json: mock received >=1 record" $?
+    grep '"session_id":"cfg-e2e"' "$MOCK_OUT" | head -n 1 | grep -q '_raw'
+    [ $? -ne 0 ]; check "upload e2e config.json: RAW=0 applied from the file, no _raw" $?
+    [ -s "$CFG_DIR/logs/.request-logger/upload-state.json" ]; check "upload e2e config.json: upload-state.json created" $?
+    [ -s "$CFG_DIR/logs/.request-logger/logger-error.log" ]; [ $? -ne 0 ]; check "upload e2e config.json: no collector error" $?
   fi
 
   kill -s INT "$MOCK_PID" 2>/dev/null
@@ -238,7 +262,7 @@ EOF
   if [ "$FAILURES" -gt 0 ]; then
     say "UPLOAD E2E FAILED - see the FAIL lines above"
   else
-    say "UPLOAD E2E OK - legacy and cursor channels both reached the mock server"
+    say "UPLOAD E2E OK - legacy, cursor and bundled config.json channels all reached the mock server"
   fi
 fi
 

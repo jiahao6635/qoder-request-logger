@@ -36,7 +36,12 @@
  *        .request-logger/upload-state.json (any failure leaves the offset
  *        untouched, so the same bytes replay next round; server dedupes)
  *
- * Configuration (environment, normally set in hooks/hooks.json):
+ * Configuration sources, in priority order: process env (local overrides
+ * and tests) > hooks/config.json shipped next to this script (the fleet
+ * package's deployment settings) > built-in defaults. The Qoder hook
+ * runner does not inject the hooks.json per-event env block, so the
+ * distribution package relies on config.json; see QODER_LOG_DIR below for
+ * the env-only exception:
  *   QODER_LOG_SERVER_URL         Receiver base or full URL. Empty disables push.
  *   QODER_LOG_API_KEY            Sent as the X-API-Key header. When empty,
  *                                falls back to the per-machine credentials file
@@ -94,10 +99,35 @@ const LOGGER_VERSION = "1.1.0";
 const ENV = process.env;
 const SELF_TEST = process.argv[2] === "--self-test";
 
+// Bundled deployment config: hooks/config.json ships next to this script in
+// the distribution package. The Qoder hook runner does NOT inject the
+// hooks.json per-event env block (verified on 1.1.4: every env-backed setting
+// ran at its built-in default), so a fleet package carries its deployment
+// settings here instead and the collector reads them with zero env. A
+// missing or corrupt file simply yields env-only behaviour - exactly the
+// pre-config.json shape, so dev checkouts without the file keep working.
+// QODER_LOG_DIR is deliberately NOT readable from the file: the log
+// directory is machine state, never something a distribution picks.
+const FILE_CONFIG = (() => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (err) { /* not shipped or unreadable: env-only, silently */ }
+  return {};
+})();
+
+/** env > bundled config.json: an empty or unset env value defers to the file. */
+function cfg(key) {
+  const v = ENV[key];
+  if (typeof v === "string" && v.trim() !== "") return v;
+  const f = FILE_CONFIG[key];
+  return typeof f === "string" ? f : "";
+}
+
 // Per-machine credentials file for fleet-wide plugin distributions. IT ships
 // one identical plugin package to everyone and provisions this file per
 // machine, so personal keys never travel inside the plugin itself.
-const CREDENTIALS_FILE = ENV.QODER_LOG_CREDENTIALS_FILE
+const CREDENTIALS_FILE = cfg("QODER_LOG_CREDENTIALS_FILE")
   || path.join(os.homedir(), ".qoder", "log-credentials.json");
 
 // Set when the credentials file exists but is unusable; surfaced once through
@@ -106,8 +136,8 @@ const CREDENTIALS_FILE = ENV.QODER_LOG_CREDENTIALS_FILE
 let credentialIssue = null;
 
 /**
- * Identity resolution: environment values (personalised hooks.json) win;
- * empty values fall back to the credentials file. Each call re-evaluates and
+ * Identity resolution: env / bundled config.json values win; empty values
+ * fall back to the credentials file. Each call re-evaluates and
  * resets {@code credentialIssue}. A missing file is the expected
  * not-yet-provisioned state (silent, local-only mode); a file that exists but
  * is incomplete or malformed records an issue for diagnostics.
@@ -150,32 +180,32 @@ function resolveIdentity(envApiKey, envUserId, credentialsFile) {
   return { apiKey: envKey || fileKey, userId: envUser || fileUser };
 }
 
-const IDENTITY = resolveIdentity(ENV.QODER_LOG_API_KEY, ENV.QODER_LOG_USER_ID, CREDENTIALS_FILE);
+const IDENTITY = resolveIdentity(cfg("QODER_LOG_API_KEY"), cfg("QODER_LOG_USER_ID"), CREDENTIALS_FILE);
 
 const CONFIG = {
-  serverUrl: ENV.QODER_LOG_SERVER_URL || "",
+  serverUrl: cfg("QODER_LOG_SERVER_URL"),
   apiKey: IDENTITY.apiKey,
   userId: IDENTITY.userId,
   credentialsFile: CREDENTIALS_FILE,
   logDir: ENV.QODER_LOG_DIR || path.join(os.homedir(), ".qoder", "logs"),
-  truncate: intOpt(ENV.QODER_LOG_TRUNCATE, 20000),
-  maxFileBytes: intOpt(ENV.QODER_LOG_MAX_FILE_MB, 64) * 1024 * 1024,
-  keepRaw: ENV.QODER_LOG_RAW !== "0",
-  harvestTranscript: ENV.QODER_LOG_INCLUDE_TRANSCRIPT !== "0",
-  transcriptPrompt: ENV.QODER_LOG_TRANSCRIPT_PROMPT === "1",
-  redact: ENV.QODER_LOG_REDACT !== "0",
-  httpTimeoutMs: intOpt(ENV.QODER_LOG_HTTP_TIMEOUT_MS, 5000),
+  truncate: intOpt(cfg("QODER_LOG_TRUNCATE"), 20000),
+  maxFileBytes: intOpt(cfg("QODER_LOG_MAX_FILE_MB"), 64) * 1024 * 1024,
+  keepRaw: cfg("QODER_LOG_RAW") !== "0",
+  harvestTranscript: cfg("QODER_LOG_INCLUDE_TRANSCRIPT") !== "0",
+  transcriptPrompt: cfg("QODER_LOG_TRANSCRIPT_PROMPT") === "1",
+  redact: cfg("QODER_LOG_REDACT") !== "0",
+  httpTimeoutMs: intOpt(cfg("QODER_LOG_HTTP_TIMEOUT_MS"), 5000),
   // Upload channel selection. "legacy" keeps the historical per-record push
   // byte-for-byte; "cursor" switches to offset-tracked batch upload; "off",
   // an unknown value, or an empty serverUrl all disable HTTP entirely.
-  uploadMode: normalizeUploadMode(ENV.QODER_LOG_UPLOAD_MODE),
+  uploadMode: normalizeUploadMode(cfg("QODER_LOG_UPLOAD_MODE")),
   // Interval 0 is a legal value here: it disables the cursor throttle
   // entirely (every hook run may attempt an upload), which tests and demos
   // rely on. All other intOpt callers keep the default minimum of 1.
-  uploadIntervalSec: intOpt(ENV.QODER_LOG_UPLOAD_INTERVAL_SEC, 60, 0),
-  localRetentionDays: intOpt(ENV.QODER_LOG_LOCAL_RETENTION_DAYS, 0),
-  batchMaxLines: intOpt(ENV.QODER_LOG_BATCH_MAX_LINES, 2000, 1),
-  batchMaxBytes: intOpt(ENV.QODER_LOG_BATCH_MAX_MB, 6, 1) * 1024 * 1024,
+  uploadIntervalSec: intOpt(cfg("QODER_LOG_UPLOAD_INTERVAL_SEC"), 60, 0),
+  localRetentionDays: intOpt(cfg("QODER_LOG_LOCAL_RETENTION_DAYS"), 0),
+  batchMaxLines: intOpt(cfg("QODER_LOG_BATCH_MAX_LINES"), 2000, 1),
+  batchMaxBytes: intOpt(cfg("QODER_LOG_BATCH_MAX_MB"), 6, 1) * 1024 * 1024,
   cursorBudgetMs: 10 * 1000,
   cursorMaxBatches: 3,
   maxTailBytes: 4 * 1024 * 1024,

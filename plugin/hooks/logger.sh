@@ -67,6 +67,20 @@ find_node() {
 
 NODE_BIN=$(find_node)
 
+# Bundled deployment config (hooks/config.json): the hook runner does not
+# inject the hooks.json env block, so the fleet package carries its settings
+# in that file. The collector reads every key from the file itself except
+# NODE_EXTRA_CA_CERTS, which only takes effect when set before Node starts
+# (TLS trust is initialised at boot) - hence exported here, guarded so an
+# absent/unreadable file changes nothing.
+if [ -n "$NODE_BIN" ] && [ -f "$HOOK_DIR/config.json" ]; then
+  BUNDLED_CA=$("$NODE_BIN" -e 'try{const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof c.NODE_EXTRA_CA_CERTS==="string")process.stdout.write(c.NODE_EXTRA_CA_CERTS)}catch(e){}' "$HOOK_DIR/config.json" 2>/dev/null)
+  if [ -n "$BUNDLED_CA" ]; then
+    NODE_EXTRA_CA_CERTS="$BUNDLED_CA"
+    export NODE_EXTRA_CA_CERTS
+  fi
+fi
+
 if [ -n "$NODE_BIN" ]; then
   printf '%s' "$INPUT" | "$NODE_BIN" "$HOOK_DIR/log-request.js" >/dev/null 2>&1
   exit 0
