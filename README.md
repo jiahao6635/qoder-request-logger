@@ -76,7 +76,9 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 | `QODER_LOG_USER_ID` | 企业身份覆盖：作为记录 `email`（Server 归因用）与 `client_id`；统一分发包留空，由 QoderWork payload / git 配置提供；留空时同上回退 |
 | `QODER_LOG_CREDENTIALS_FILE` | 本机凭据文件路径（默认 `~/.qoder/log-credentials.json`，格式 `{api_key, user_id}`；仅单机覆盖场景使用，统一包无需下发） |
 | `QODER_LOG_UPLOAD_MODE` | `legacy` \| `cursor` |
-| `QODER_LOG_UPLOAD_INTERVAL_SEC` | 上报间隔（秒） |
+| `QODER_LOG_UPLOAD_INTERVAL_SEC` | 上报间隔（秒，cursor 两次上传尝试的最小间隔） |
+| `QODER_LOG_BATCH_MAX_LINES` | cursor 单批最大行数（默认 `2000`） |
+| `QODER_LOG_BATCH_MAX_MB` | cursor 单批最大体积（压缩前明文 MB，默认 `6`；须低于服务端 `audit.max-body-mb=8`） |
 | `QODER_LOG_REDACT` | `1` 开启凭据脱敏 |
 | `QODER_LOG_LOCAL_RETENTION_DAYS` | 本地日志保留天数（`0` = 不清理） |
 

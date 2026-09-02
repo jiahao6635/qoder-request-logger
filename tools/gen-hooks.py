@@ -19,11 +19,13 @@ superset is safe and keeps one config working across IDE and CLI.
 
 The upload channel is parameterised: --server-url/--api-key/--user-id feed the
 collector identity, --upload-mode selects off | legacy | cursor (default
-legacy = the historical per-record push), and --ca-certs points
-NODE_EXTRA_CA_CERTS at a private CA bundle. Unset options keep their defaults,
-so a bare run reproduces the shipped configuration byte for byte; the other
-flags are distribution layers on top of the shipped 13-event scope (or the
-26-event superset with --all-events).
+legacy = the historical per-record push), --local-retention-days sets how long
+fully-uploaded daily files stay on employee machines (cursor mode only; 0 =
+keep forever), and --ca-certs points NODE_EXTRA_CA_CERTS at a private CA
+bundle. Unset options keep their defaults, so a bare run reproduces the
+shipped configuration byte for byte; the other flags are distribution layers
+on top of the shipped 13-event scope (or the 26-event superset with
+--all-events).
 
 Distribution model (recommended: shared-key fleet package):
 
@@ -130,14 +132,17 @@ FULL_SCOPE_DESCRIPTION = (
 # so that logging can never block or break the agent.
 COMMAND = '"${QODER_PLUGIN_ROOT}"/hooks/logger.sh'
 
-# Default env block shared by every event. Callers override the five
-# deployment-specific keys (server url / api key / user id / upload mode /
-# CA bundle) via CLI flags; everything else is fixed policy:
+# Default env block shared by every event. Callers override the deployment-
+# specific keys (server url / api key / user id / upload mode / interval /
+# local retention / batch caps / CA bundle) via CLI flags; everything else is
+# fixed policy:
 #   QODER_LOG_REDACT=1               credential masking stays on
 #   QODER_LOG_INCLUDE_TRANSCRIPT=1   Credits / token harvesting stays on
 #   QODER_LOG_RAW="0"                verbatim stdin copy stays off
 #   QODER_LOG_UPLOAD_INTERVAL_SEC    min seconds between cursor attempts
 #   QODER_LOG_LOCAL_RETENTION_DAYS   0 = never delete local files
+#   QODER_LOG_BATCH_MAX_LINES/MB     per-batch caps (server ceiling is 8MB
+#                                    decompressed; keep defaults below it)
 HOOK_CONFIG = {
     "QODER_LOG_SERVER_URL": "",
     "QODER_LOG_API_KEY": "",
@@ -148,17 +153,25 @@ HOOK_CONFIG = {
     "QODER_LOG_UPLOAD_MODE": "legacy",
     "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
     "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+    "QODER_LOG_BATCH_MAX_LINES": "2000",
+    "QODER_LOG_BATCH_MAX_MB": "6",
     "NODE_EXTRA_CA_CERTS": "",
 }
 
 
-def build(server_url="", api_key="", user_id="", ca_certs="", upload_mode="legacy", all_events=False):
+def build(server_url="", api_key="", user_id="", ca_certs="", upload_mode="legacy",
+          upload_interval_sec=60, local_retention_days=0, batch_max_lines=2000,
+          batch_max_mb=6, all_events=False):
     env = dict(HOOK_CONFIG)
     env.update({
         "QODER_LOG_SERVER_URL": server_url,
         "QODER_LOG_API_KEY": api_key,
         "QODER_LOG_USER_ID": user_id,
         "QODER_LOG_UPLOAD_MODE": upload_mode,
+        "QODER_LOG_UPLOAD_INTERVAL_SEC": str(upload_interval_sec),
+        "QODER_LOG_LOCAL_RETENTION_DAYS": str(local_retention_days),
+        "QODER_LOG_BATCH_MAX_LINES": str(batch_max_lines),
+        "QODER_LOG_BATCH_MAX_MB": str(batch_max_mb),
         "NODE_EXTRA_CA_CERTS": ca_certs,
     })
     # Default: the shipped 13-event internal-audit scope in delivery order;
@@ -204,6 +217,16 @@ def parse_args():
                         help="NODE_EXTRA_CA_CERTS path to a private CA bundle")
     parser.add_argument("--upload-mode", default="legacy", choices=["off", "legacy", "cursor"],
                         help="upload channel mode (default: legacy, the historical per-record push)")
+    parser.add_argument("--upload-interval-sec", type=int, default=60,
+                        help="min seconds between cursor upload attempts (0 = no throttle)")
+    parser.add_argument("--local-retention-days", type=int, default=0,
+                        help="delete fully-uploaded daily files older than N days "
+                             "(cursor mode only; 0 = keep forever, the default)")
+    parser.add_argument("--batch-max-lines", type=int, default=2000,
+                        help="max lines per cursor batch (default: 2000)")
+    parser.add_argument("--batch-max-mb", type=int, default=6,
+                        help="max uncompressed megabytes per cursor batch "
+                             "(default: 6; server ceiling is 8MB decompressed)")
     parser.add_argument("--all-events", action="store_true",
                         help="emit the full 26-event superset instead of the shipped 13-event internal-audit scope")
     parser.add_argument("--output", default=None,
@@ -214,7 +237,11 @@ def parse_args():
 def main():
     args = parse_args()
     target = Path(args.output) if args.output else Path(__file__).resolve().parent.parent / "plugin" / "hooks" / "hooks.json"
-    payload = build(args.server_url, args.api_key, args.user_id, args.ca_certs, args.upload_mode, all_events=args.all_events)
+    payload = build(args.server_url, args.api_key, args.user_id, args.ca_certs, args.upload_mode,
+                    upload_interval_sec=args.upload_interval_sec,
+                    local_retention_days=args.local_retention_days,
+                    batch_max_lines=args.batch_max_lines, batch_max_mb=args.batch_max_mb,
+                    all_events=args.all_events)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"wrote {target} ({len(payload['hooks'])} events)")

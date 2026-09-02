@@ -21,6 +21,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -47,6 +49,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -73,6 +77,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -99,6 +105,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -125,6 +133,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -151,6 +161,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -177,6 +189,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -203,6 +217,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -229,6 +245,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -255,6 +273,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -281,6 +301,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -307,6 +329,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }
@@ -333,6 +357,8 @@
               "QODER_LOG_UPLOAD_MODE": "legacy",
               "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
               "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "QODER_LOG_BATCH_MAX_LINES": "2000",
+              "QODER_LOG_BATCH_MAX_MB": "6",
               "NODE_EXTRA_CA_CERTS": ""
             }
           }

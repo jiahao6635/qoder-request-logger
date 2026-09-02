@@ -61,6 +61,10 @@
  *                                throttle, every hook run may upload. Default: 60
  *   QODER_LOG_LOCAL_RETENTION_DAYS Delete fully-uploaded daily files older than
  *                                N days. 0 (default) keeps everything forever.
+ *   QODER_LOG_BATCH_MAX_LINES     Max lines per cursor batch. Default: 2000
+ *   QODER_LOG_BATCH_MAX_MB        Max uncompressed megabytes per cursor batch.
+ *                                Default: 6; keep it under the server's
+ *                                AUDIT_MAX_BODY_MB=8 decompressed ceiling.
  *
  * Zero dependencies. A logger must never interfere with the agent, so this
  * script never writes to stdout and always exits 0.
@@ -160,8 +164,8 @@ const CONFIG = {
   // rely on. All other intOpt callers keep the default minimum of 1.
   uploadIntervalSec: intOpt(ENV.QODER_LOG_UPLOAD_INTERVAL_SEC, 60, 0),
   localRetentionDays: intOpt(ENV.QODER_LOG_LOCAL_RETENTION_DAYS, 0),
-  batchMaxLines: 500,
-  batchMaxBytes: 2 * 1024 * 1024,
+  batchMaxLines: intOpt(ENV.QODER_LOG_BATCH_MAX_LINES, 2000, 1),
+  batchMaxBytes: intOpt(ENV.QODER_LOG_BATCH_MAX_MB, 6, 1) * 1024 * 1024,
   cursorBudgetMs: 10 * 1000,
   cursorMaxBatches: 3,
   maxTailBytes: 4 * 1024 * 1024,
