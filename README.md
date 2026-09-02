@@ -65,6 +65,7 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 
 - **仅本地模式**：`QODER_LOG_SERVER_URL` 留空时只写本地 JSON Lines 日志（按天分割），不上报。
 - **上报模式**：`QODER_LOG_UPLOAD_MODE=legacy`（逐条 push + outbox 重试，默认）或 `cursor`（offset 跟踪 gzip 批量上传）。
+- **服务端异常不影响 Qoder 使用**（收集器视为可选增强，任何故障只降级采集、不阻塞 agent）：每次 push 带 socket 超时 + 硬超时（覆盖 DNS 解析与 TCP connect 阶段，默认 5s 档）；传输失败/超时/5xx/429 触发共享指数退避（`~/.qoder/logs/.request-logger/upload-state.json` 中 `consecutiveFailures`/`nextAttemptAtMs`，1min→2min→5min→15min→30min→1h 封顶），退避期间 hook 调用**零网络开销**（记录落 outbox / 本地日文件，恢复后自动补传，服务端去重）；Key 被拒（401/403）仍走既有 24h 熔断。单次 2xx 即清除退避自动恢复。
 - **统一分发模式（推荐）**：`gen-hooks.py --server-url ... --api-key qk_<共享Key>` 把 Server 地址与全公司共享 Key 直接写进统一包，一个包全员安装；归因不依赖 Key（以记录内 `email` 为准）。本机凭据文件 `~/.qoder/log-credentials.json`（`QODER_LOG_CREDENTIALS_FILE` 可覆盖路径）仅作为单机覆盖的可选兜底（见 runbook §4.5）。
 
 关键环境变量（配置于 `plugin/hooks/hooks.json` 各事件的 `env` 块）：

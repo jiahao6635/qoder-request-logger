@@ -119,10 +119,10 @@ ossutil rm oss://<bucket>/logs/qoder/v1/_manifest/probe.txt
 
 | # | 条件/限制 | 说明 | 后果与对策 |
 | --- | --- | --- | --- |
-| 1 | **内网 HTTPS 与 CA 证书** | Server 若部署为内网 HTTPS（自签/企业 CA），Node 默认不信任企业根 CA | **必须**将企业 CA 证书随插件分发落到固定路径（如 `~/.qoder/plugins/ca/sigmob-root.crt`），并在 `hooks.json` 环境（或系统级）设置 `NODE_EXTRA_CA_CERTS=~/.qoder/plugins/ca/sigmob-root.crt`。**否则 Node 证书校验失败，上报全部静默进 outbox 死循环**（客户端 hook 永远 exit 0，不报错），G1 首日专项检查必须核对 Server 接收量 |
+| 1 | **内网 HTTPS 与 CA 证书** | Server 若部署为内网 HTTPS（自签/企业 CA），Node 默认不信任企业根 CA | **必须**将企业 CA 证书随插件分发落到固定路径（如 `~/.qoder/plugins/ca/sigmob-root.crt`），并在 `hooks.json` 环境（或系统级）设置 `NODE_EXTRA_CA_CERTS=~/.qoder/plugins/ca/sigmob-root.crt`。**否则 Node 证书校验失败，上报全部静默进 outbox 死循环**（客户端 hook 永远 exit 0，不报错），G1 首日专项检查必须核对 Server 接收量。当前采集器对此类传输层失败会进入共享指数退避：首个失败仅受一次有界超时窗口影响，此后 hook 调用零网络开销，修复证书后下一次允许尝试自动恢复 |
 | 2 | 无 Node 机器 | `logger.sh` 找不到 Node 时自动回退 jq 兜底采集器（`plugin/hooks/log-request.sh`） | 兜底采集器**仅本地落盘，无上报能力**（无 `/api/logs` 通道）。此类机器需先安装 Node ≥ 16 或长期接受本地采集；coverage 报告会将其识别为"未上报" |
 | 3 | 客户端本地始终双写 | 本地 `$QODER_LOG_DIR/requests_<D>.jsonl`（默认 `~/.qoder/logs`）**永远开启**，HTTP 上报是增量能力（`QODER_LOG_SERVER_URL` 非空才启用） | 天然回滚路径（见下）与对账数据源 |
-| 4 | 回滚方案 | 清空 `hooks.json` 各事件 `env` 中的 `QODER_LOG_SERVER_URL`（置 `""`），插件回到纯本地现状 | 零代码回滚。注意：Server 停机期间客户端**本地继续落盘、上报失败进 outbox**（`~/.qoder/logs/.request-logger/outbox.ndjson`，上限 8MB），游标停滞；恢复后下一次 hook 调用自动 drain 追平，无需人工干预 |
+| 4 | 回滚方案 | 清空 `hooks.json` 各事件 `env` 中的 `QODER_LOG_SERVER_URL`（置 `""`），插件回到纯本地现状 | 零代码回滚。注意：Server 停机期间客户端**本地继续落盘，传输失败触发共享指数退避**（`upload-state.json` 的 `nextAttemptAtMs`，1min→1h 封顶；首个失败仅受一次有界超时窗口影响，此后 hook 调用零网络开销，**用户使用 Qoder 全程无感**），失败记录进 outbox（`~/.qoder/logs/.request-logger/outbox.ndjson`，上限 8MB），游标停滞；恢复后下一次允许的 hook 调用自动 drain 追平，无需人工干预 |
 | 5 | outbox 有界 | 客户端 outbox 上限 8MB（硬编码常量 `outboxMaxBytes`，见 `plugin/hooks/log-request.js` CONFIG），超限后新失败记录被丢弃 | 长时间断连场景以 Server spool + OSS 已传数据为准；对账用 `oss-reconcile.js` |
 | 6 | **记录身份为客户端自报** | 归因以记录内拍平的企业身份 `email` 字段为准（`ingest_user` 盖章与 OSS `user=` 分区均取自它）；共享 API Key 仅做接口鉴权，不参与归因 | 接受的取舍：内网环境 + 用量消耗有 Qoder 官方后台数据兜底，不防御内网恶意伪造；换机/轮转 Key 不影响归因连续性（`email` 不变 → OSS `user=` 分区不变） |
 | 7 | **工作区代码合并 ≠ 生产生效** | 生产 hook 由 `~/.qoder/plugins` 缓存内的**已安装插件副本**执行，本仓库工作区的改动不会自动到达客户端 | 重新安装/发布插件后才生效；装后用 `grep -m1 '"email"' ~/.qoder/logs/requests_*.jsonl` 确认新采集器已在运行（1.1.0 = 企业身份拍平到最外层、无企业身份不采集的版本） |
@@ -500,7 +500,7 @@ node tools/oss-audit.js fetch --date 2026-09-01 --user jiahao.li@sigmob.com --sr
 | 层 | 缓冲能力 | 行为 |
 | --- | --- | --- |
 | Server spool | 100GB ≈ **10 天**未压缩全量（见容量论证 §6） | OSS 上传失败 → 段留 spool，重试退避；spool 写满前数据安全 |
-| 客户端 | 本地 `requests_<D>.jsonl` 永远双写 + outbox 8MB | Server 503/超时 → 记录进 outbox，hook 调用时自动重试 |
+| 客户端 | 本地 `requests_<D>.jsonl` 永远双写 + outbox 8MB | Server 503/超时 → 记录进 outbox + 共享指数退避（1min→1h 封顶），退避期 hook 调用零网络开销（用户无感），恢复后自动补传，服务端去重 |
 
 处置步骤：① 确认 OSS 故障公告/网络工单；② 观察磁盘 80% 告警线，预计故障时长 > 7 天则提前扩盘或临时切换 `oss.endpoint`；③ 恢复后 spool 自动按序上传（`upload.lag` 回落），客户端 outbox 自动 drain 追平；④ 事后跑 `oss-reconcile.js` 抽样对账。
 

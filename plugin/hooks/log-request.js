@@ -27,8 +27,10 @@
  *   1. Local JSONL, always on:  $QODER_LOG_DIR/requests_YYYY-MM-DD.jsonl
  *   2. HTTP POST, opt-in:       $QODER_LOG_SERVER_URL
  *      - legacy (default): one POST per record, failures queue to outbox;
- *        a rejected key (401/403) trips the shared 24h breaker instead, so
- *        those records are dropped rather than cycled through the outbox
+ *        transport failures and server refusals trip the shared exponential
+ *        backoff (1min..1h) so a dead server never slows the agent down,
+ *        while a rejected key (401/403) trips the shared 24h breaker instead,
+ *        so those records are dropped rather than cycled through the outbox
  *      - cursor: gzip batches of complete lines from the daily files to
  *        {origin}/api/logs/batch, advancing a per-file byte offset stored in
  *        .request-logger/upload-state.json (any failure leaves the offset
@@ -68,6 +70,14 @@
  *
  * Zero dependencies. A logger must never interfere with the agent, so this
  * script never writes to stdout and always exits 0.
+ *
+ * Server-outage safety: the receiver is treated as optional enrichment. Every
+ * push carries a socket timeout plus a hard timeout that also covers DNS
+ * resolution and TCP connect (where the socket timeout never fires), and every
+ * failure feeds a shared exponential backoff persisted in upload-state.json
+ * (1min, 2min, 5min, 15min, 30min, then hourly). While the backoff or the
+ * 401/403 breaker is open, hook runs skip the network entirely and records
+ * wait in the outbox / daily files until the next allowed attempt.
  */
 
 "use strict";
@@ -1177,20 +1187,75 @@ function sleepSync(ms) {
 
 let activeRequests = 0;
 
+/**
+ * Transport-level backoff, shared by both channels through upload-state.json
+ * (same mechanism as the 401/403 breaker). Any failure to reach the server
+ * (network error, timeout, DNS/connect hang) or a server-side refusal (5xx,
+ * 429, 503) grows a consecutive-failure counter and schedules the next
+ * attempt on an exponential curve: 1min, 2min, 5min, 15min, 30min, then
+ * hourly. While the backoff is open, every hook run stands down with zero
+ * network cost - a dead or unreachable server must never slow the agent
+ * down, it only degrades the audit pipeline. A single 2xx clears the state,
+ * so recovery is picked up by the very next allowed attempt.
+ */
+const BACKOFF_STEPS_SEC = [60, 120, 300, 900, 1800, 3600];
+
+function backoffSec(failures) {
+  return BACKOFF_STEPS_SEC[Math.min(Math.max(failures, 1), BACKOFF_STEPS_SEC.length) - 1];
+}
+
+// Set once the first transport failure of this run trips the backoff: the
+// remaining records of the same hook invocation go straight to the outbox
+// instead of retrying a server that just proved unreachable.
+let standDown = false;
+
+function noteTransportFailure(status, retryAfterSec) {
+  standDown = true;
+  try {
+    const state = readUploadState();
+    const failures = Math.max(1, (state.consecutiveFailures || 0) + 1);
+    state.consecutiveFailures = failures;
+    state.nextAttemptAtMs = Date.now() + (retryAfterSec > 0 ? retryAfterSec : backoffSec(failures)) * 1000;
+    writeUploadState(state);
+  } catch (err) { /* silent by design: never break the hook */ }
+}
+
+function noteTransportSuccess() {
+  standDown = false;
+  try {
+    const state = readUploadState();
+    if (state.consecutiveFailures || state.nextAttemptAtMs) {
+      state.consecutiveFailures = 0;
+      state.nextAttemptAtMs = 0;
+      writeUploadState(state);
+    }
+  } catch (err) { /* silent by design: never break the hook */ }
+}
+
 function flushPending() {
   if (!CONFIG.serverUrl) return;
   if (CONFIG.uploadMode !== "legacy") return; // cursor/off never touch the legacy channel
-  // 401/403 circuit breaker, shared with cursor mode through the same
-  // upload-state.json (breakerUntilMs). While tripped, the whole legacy
-  // channel stands down silently. Read-only on the happy path: a 2xx never
-  // writes state, and without SERVER_URL this function returns before the
-  // state file is even read.
-  if (Date.now() < readUploadState().breakerUntilMs) return;
+  // Circuit breakers, shared with cursor mode through upload-state.json: a
+  // rejected key (breakerUntilMs, 24h) or an unreachable server
+  // (nextAttemptAtMs, exponential transport backoff) stands the whole legacy
+  // channel down silently. Read-only on the happy path: only a 2xx that
+  // clears an active backoff writes state, and without SERVER_URL this
+  // function returns before the state file is even read.
+  const state = readUploadState();
+  if (Date.now() < state.breakerUntilMs || Date.now() < state.nextAttemptAtMs) {
+    // Server down or backing off: park the backlog in the outbox so the
+    // records survive this process and ship once the server answers again.
+    while (pending.length) queueOutbox(pending.shift());
+    return;
+  }
   drainOutbox();
   while (pending.length) pushRecord(pending.shift());
 }
 
 function pushRecord(record) {
+  // A transport failure earlier in this run already tripped the backoff:
+  // skip the doomed attempt, the record waits in the outbox instead.
+  if (standDown) { queueOutbox(record); return; }
   let url;
   try {
     url = resolveEndpoint(CONFIG.serverUrl);
@@ -1205,6 +1270,26 @@ function pushRecord(record) {
     return; // unserializable record
   }
   const transport = url.protocol === "https:" ? https : http;
+  let settled = false;
+  // Single exit for every failure path: exactly one activeRequests decrement,
+  // one failure note and one outbox entry, whichever of error / socket
+  // timeout / hard timeout lands first.
+  const settleFailure = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(hardTimer);
+    activeRequests -= 1;
+    noteTransportFailure(0, 0);
+    queueOutbox(record);
+  };
+  const hardTimer = setTimeout(() => {
+    // Hard stop beyond the socket-level timeout: that one cannot fire during
+    // DNS resolution or TCP connect, and an unanswered resolver would
+    // otherwise hang the hook until the harness timeout kills the process.
+    settleFailure();
+    try { request.destroy(); } catch (err) { /* request never constructed */ }
+  }, CONFIG.httpTimeoutMs + 200);
+  hardTimer.unref();
   const request = transport.request({
     hostname: url.hostname,
     port: url.port || (url.protocol === "https:" ? 443 : 80),
@@ -1216,9 +1301,13 @@ function pushRecord(record) {
     },
     timeout: CONFIG.httpTimeoutMs,
   }, (response) => {
-    activeRequests -= 1;
     const status = response.statusCode || 0;
+    const retryAfter = Number(response.headers["retry-after"]);
     response.resume();
+    if (settled) return;
+    settled = true;
+    clearTimeout(hardTimer);
+    activeRequests -= 1;
     if (status === 401 || status === 403) {
       // The key itself is rejected, so retrying can never succeed; queueing
       // would cycle the same records through the outbox on every hook run
@@ -1228,11 +1317,21 @@ function pushRecord(record) {
       tripLegacyBreaker(status);
       return;
     }
-    if (status >= 400) queueOutbox(record);
+    if (status >= 200 && status < 300) {
+      noteTransportSuccess();
+      return;
+    }
+    if (status >= 400) {
+      // Every other refusal also feeds the shared exponential backoff
+      // (429/503 honour Retry-After), so a struggling server sees at most
+      // one attempt per hook run and the agent never waits on it.
+      noteTransportFailure(status, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0);
+      queueOutbox(record);
+    }
   });
   activeRequests += 1;
-  request.on("error", () => { activeRequests -= 1; queueOutbox(record); });
-  request.on("timeout", () => { request.destroy(); queueOutbox(record); });
+  request.on("error", settleFailure);
+  request.on("timeout", () => { request.destroy(); settleFailure(); });
   if (CONFIG.apiKey) request.setHeader("X-API-Key", CONFIG.apiKey);
   request.write(body);
   request.end();
@@ -1327,6 +1426,7 @@ function readUploadState() {
     lastAttemptMs: numOr0(parsed && parsed.lastAttemptMs),
     nextAttemptAtMs: numOr0(parsed && parsed.nextAttemptAtMs),
     breakerUntilMs: numOr0(parsed && parsed.breakerUntilMs),
+    consecutiveFailures: numOr0(parsed && parsed.consecutiveFailures),
   };
 }
 
@@ -1433,8 +1533,10 @@ function cursorOnResponse(result, files, fileIdx, state, fileName, batch, maxLin
   const status = result.status;
   const now = Date.now();
   if (status >= 200 && status < 300) {
-    // Any 2xx means the whole batch landed: advance the cursor and continue
-    // within the remaining budget (same file first, it may have more lines).
+    // Any 2xx means the whole batch landed: clear the shared transport
+    // backoff (recovery), advance the cursor and continue within the
+    // remaining budget (same file first, it may have more lines).
+    noteTransportSuccess();
     cursorSetOffset(state, fileName, batch.nextOffset);
     writeUploadState(state);
     cursorBatches += 1;
@@ -1448,9 +1550,8 @@ function cursorOnResponse(result, files, fileIdx, state, fileName, batch, maxLin
     return;
   }
   if (status === 429 || status === 503) {
-    const waitSec = result.retryAfterSec > 0 ? result.retryAfterSec : 60;
-    state.nextAttemptAtMs = now + waitSec * 1000;
-    writeUploadState(state);
+    // Honour Retry-After, falling back to the shared exponential curve.
+    noteTransportFailure(status, result.retryAfterSec);
     return;
   }
   if (status === 413) {
@@ -1461,8 +1562,11 @@ function cursorOnResponse(result, files, fileIdx, state, fileName, batch, maxLin
     reportError(new Error("batch upload rejected: HTTP 413 even after halving (" + batch.lineCount + " lines)"), { stage: "cursorUpload" });
     return;
   }
-  // Network error, timeout, 5xx or anything else: stop. The offset was not
-  // advanced, so the same bytes are replayed on the next tick.
+  // Network error, timeout, 5xx or anything else: stop and feed the shared
+  // exponential backoff, so consecutive hook runs stand down instead of
+  // retrying a dead server on every invocation. The offset was not
+  // advanced, so the same bytes are replayed on the next allowed attempt.
+  noteTransportFailure(status, 0);
 }
 
 /**
@@ -1517,6 +1621,24 @@ function postBatch(body, done) {
     return;
   }
   const transport = url.protocol === "https:" ? https : http;
+  activeRequests += 1;
+  let settled = false;
+  // Single exit point: exactly one activeRequests decrement and one done(),
+  // whichever of response / error / hard timeout lands first.
+  const settle = (result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(hardTimer);
+    activeRequests -= 1;
+    done(result);
+  };
+  const hardTimer = setTimeout(() => {
+    // Same hard stop as the legacy channel: the socket-level timeout never
+    // fires during DNS resolution or TCP connect.
+    settle({ status: 0, retryAfterSec: 0 });
+    try { request.destroy(); } catch (err) { /* request never constructed */ }
+  }, CONFIG.httpTimeoutMs + 200);
+  hardTimer.unref();
   const request = transport.request({
     hostname: url.hostname,
     port: url.port || (url.protocol === "https:" ? 443 : 80),
@@ -1529,20 +1651,15 @@ function postBatch(body, done) {
     },
     timeout: CONFIG.httpTimeoutMs,
   }, (response) => {
-    activeRequests -= 1;
     const status = response.statusCode || 0;
     const retryAfter = Number(response.headers["retry-after"]);
     response.resume();
-    done({
+    settle({
       status: status,
       retryAfterSec: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0,
     });
   });
-  activeRequests += 1;
-  request.on("error", () => {
-    activeRequests -= 1;
-    done({ status: 0, retryAfterSec: 0 });
-  });
+  request.on("error", () => { settle({ status: 0, retryAfterSec: 0 }); });
   request.on("timeout", () => { request.destroy(); }); // destroy emits "error"
   if (CONFIG.apiKey) request.setHeader("X-API-Key", CONFIG.apiKey);
   request.end(gz);
@@ -1909,6 +2026,52 @@ function runSelfTest() {
       ];
       credentialIssue = null;
       try { fs.rmSync(credDir, { recursive: true, force: true }); } catch (err) { /* best effort */ }
+      return results;
+    })(),
+    // Server-outage safety: transport backoff. A dead or unreachable server
+    // must never slow the agent down - failures trip a shared exponential
+    // backoff in upload-state.json, an active backoff makes hook runs skip
+    // the network entirely (records park in the outbox instead), and one
+    // 2xx clears the state. Pure-state checks; no socket is ever opened.
+    ...(function () {
+      CONFIG.uploadMode = "legacy";
+      const results = [];
+      results.push(["backoff: exponential curve caps at 1h", backoffSec(1) === 60 && backoffSec(2) === 120
+        && backoffSec(3) === 300 && backoffSec(4) === 900
+        && backoffSec(5) === 1800 && backoffSec(6) === 3600
+        && backoffSec(50) === 3600]);
+
+      // An active backoff must make flushPending() park records in the
+      // outbox instead of pushing them (discard port 9: nothing listens,
+      // and nothing should ever be contacted).
+      CONFIG.serverUrl = "http://127.0.0.1:9/api/logs";
+      const state = readUploadState();
+      state.nextAttemptAtMs = Date.now() + 60000;
+      writeUploadState(state);
+      pending.length = 0;
+      pending.push({ log_schema: "self-test", event: "BackoffProbe" });
+      flushPending();
+      let parked = false;
+      try { parked = fs.readFileSync(P.outbox(), "utf8").indexOf("BackoffProbe") >= 0; } catch (err) { /* no outbox */ }
+      results.push(["backoff: active backoff parks records in the outbox, zero network", parked]);
+      try { fs.unlinkSync(P.outbox()); } catch (err) { /* already gone */ }
+
+      noteTransportFailure(0, 0);
+      const tripped = (function () {
+        const s = readUploadState();
+        return s.consecutiveFailures === 1 && s.nextAttemptAtMs > Date.now() && standDown === true;
+      })();
+      results.push(["backoff: transport failure trips the shared state", tripped]);
+
+      noteTransportSuccess();
+      const cleared = (function () {
+        const s = readUploadState();
+        return s.consecutiveFailures === 0 && s.nextAttemptAtMs === 0 && standDown === false;
+      })();
+      results.push(["backoff: one success clears the state (auto-recovery)", cleared]);
+
+      CONFIG.serverUrl = "";
+      pending.length = 0;
       return results;
     })(),
   ];
