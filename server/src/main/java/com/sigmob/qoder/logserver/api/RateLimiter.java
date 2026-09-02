@@ -10,12 +10,14 @@ import org.springframework.stereotype.Component;
 import com.sigmob.qoder.logserver.config.ServerProperties;
 
 /**
- * Fixed-window rate limiter, applied per API key (identified by owner user id).
+ * Fixed-window rate limiter, applied per client IP. With the shared API key
+ * the key no longer identifies a person, so the window bucket is the remote
+ * address of the request.
  *
- * <p>Simple one-second windows: within the current second each key may issue at
- * most {@code limitPerSecond} requests; the window resets on the next second
- * boundary. Well within the fire-and-forget tolerance of the hook client,
- * whose outbox absorbs the occasional 429.</p>
+ * <p>Simple one-second windows: within the current second each address may
+ * issue at most {@code limitPerSecond} requests; the window resets on the next
+ * second boundary. Well within the fire-and-forget tolerance of the hook
+ * client, whose outbox absorbs the occasional 429.</p>
  */
 @Component
 public class RateLimiter {
@@ -35,7 +37,7 @@ public class RateLimiter {
 
     @Autowired
     public RateLimiter(ServerProperties properties) {
-        this(properties.getRateLimitPerKey(), Clock.systemUTC());
+        this(properties.getRateLimitPerIp(), Clock.systemUTC());
     }
 
     public RateLimiter(int limitPerSecond, Clock clock) {
@@ -46,7 +48,7 @@ public class RateLimiter {
         this.clock = clock;
     }
 
-    /** Attempts to admit one request for the given key; {@code false} means over-limit. */
+    /** Attempts to admit one request for the given address; {@code false} means over-limit. */
     public boolean tryAcquire(String key) {
         long second = clock.instant().getEpochSecond();
         Window window = windows.compute(key, (k, existing) ->
@@ -54,7 +56,7 @@ public class RateLimiter {
         return window.used.incrementAndGet() <= limitPerSecond;
     }
 
-    /** Number of tracked keys (one per employee); exposed for tests/diagnostics. */
+    /** Number of tracked addresses; exposed for tests/diagnostics. */
     public int trackedKeys() {
         return windows.size();
     }

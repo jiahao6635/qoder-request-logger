@@ -1,19 +1,22 @@
-# Example API key registry. Copy to api-keys.yml and fill in real entries.
+# Example API key registry (shared-key deployment).
 #
-# The server never stores raw keys: each `key_sha256` is the hex SHA-256 of the
-# full key string (including the `qk_` prefix). Generate one with:
+# One fleet-wide key authenticates every plugin install; record attribution
+# comes from each record's own top-level enterprise `email` field (written by
+# the collector), so `user_id` here is only a placeholder label and is NOT
+# used for attribution. Generate the key with:
 #
 #   KEY="qk_$(openssl rand -hex 16)"
 #   echo "key:     $KEY"
 #   echo "sha256:  $(printf %s "$KEY" | shasum -a 256 | cut -d' ' -f1)"
 #
+# The server never stores raw keys: `key_sha256` is the hex SHA-256 of the
+# full key string (including the `qk_` prefix).
+#
 # Hot reload: the file is re-parsed when its mtime changes (checked every 5 min).
+# Rotation = add the new key as a second entry, ship it in the next plugin
+# release, then disable the old one once every client has moved over.
 keys:
-  - user_id: jiahao.li@sigmob.com
+  - user_id: qoder-fleet@sigmob.com     # placeholder label, not used for attribution
     key_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    display_name: 李嘉豪
+    display_name: 全公司共享 Key
     enabled: true
-  - user_id: felix.zhang@sigmob.com
-    key_sha256: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
-    display_name: Felix
-    enabled: false   # disabled keys are rejected with 401

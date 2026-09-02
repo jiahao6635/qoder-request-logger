@@ -24,7 +24,7 @@ audit:
   api-keys-file: ./api-keys.yml        # Key 文件路径（结构见 api-keys.example.yml）
   spool-dir: ./spool                   # 本地落盘目录（{spool}/date=/user=/src=/current.ndjson）
   max-body-mb: 8                       # batch 解压后 body 上限，超出返回 413
-  rate-limit-per-key: 30               # 单 Key 固定窗口限流（req/s），超限 429 + Retry-After
+  rate-limit-per-ip: 30                # 单客户端 IP 固定窗口限流（req/s），超限 429 + Retry-After（共享 Key 部署，归因靠记录内 email，限流维度为 IP）
   rotate-size-mb: 64                   # 段滚动大小阈值
   close-idle-seconds: 600              # 段静默滚动阈值（测试可调 1~2s 加速）
   upload-interval-seconds: 30          # 上传调度周期（测试可调 1~2s 加速）

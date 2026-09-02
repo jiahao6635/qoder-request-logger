@@ -66,7 +66,7 @@ class SpoolUploadE2ETest {
         registry.add("audit.spool-dir", () -> temp.resolve("spool").toString());
         registry.add("audit.close-idle-seconds", () -> "1");
         registry.add("audit.upload-interval-seconds", () -> "1");
-        registry.add("audit.rate-limit-per-key", () -> "1000");
+        registry.add("audit.rate-limit-per-ip", () -> "1000");
         // dev data volume is ~98% full; disable backpressure noise (covered elsewhere)
         registry.add("audit.disk.high-watermark", () -> "1.0");
         registry.add("oss.mode", () -> "file");
@@ -114,14 +114,16 @@ class SpoolUploadE2ETest {
     @Test
     void recordsFlowThroughSpoolGzipUploadWithStampsAndDedup() throws Exception {
         // 1. inject a deterministic batch: one plain record -> src=qoder,
-        //    one QoderWork task record -> src=qoderwork; both 2026-09-01 Beijing
+        //    one QoderWork task record -> src=qoderwork; both 2026-09-01 Beijing.
+        //    Attribution is payload-driven: the email field below decides the
+        //    ingest_user stamp and the user= object partition (shared-key server).
         String batch = """
                 {"log_schema":"1.0.1","record_kind":"hook_event","client_id":"CZ-0101000193/happyelements",\
-                "session_id":"15bcb426-8673","timestamp":"2026-09-01T02:09:12.883Z",\
+                "email":"jiahao.li@sigmob.com","session_id":"15bcb426-8673","timestamp":"2026-09-01T02:09:12.883Z",\
                 "timestamp_ms":1788228552883,"event":"UserPromptSubmit","type":"USER_REQUEST",\
                 "prompt":"run the tests","credits":1.42}
                 {"log_schema":"1.0.1","record_kind":"hook_event","client_id":"CZ-0101000193/happyelements",\
-                "session_id":"task-9f2c-longrunning","timestamp":"2026-09-01T02:09:16.279Z",\
+                "email":"jiahao.li@sigmob.com","session_id":"task-9f2c-longrunning","timestamp":"2026-09-01T02:09:16.279Z",\
                 "timestamp_ms":1788228556279,"event":"TaskCreated","type":"TASK_CREATED",\
                 "credits":0.58}
                 """;

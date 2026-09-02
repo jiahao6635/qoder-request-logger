@@ -16,7 +16,6 @@ public class ServerMetrics {
     private final Counter receivedBatch;
     private final Counter deduped;
     private final Counter rejected;
-    private final Counter identityMismatch;
     private final Counter srcFallback;
     private final Counter ossUploadSuccess;
     private final Counter ossUploadFailure;
@@ -32,9 +31,6 @@ public class ServerMetrics {
                 .description("Records dropped as duplicates").register(registry);
         this.rejected = Counter.builder("records_rejected_total")
                 .description("Records rejected as malformed").register(registry);
-        this.identityMismatch = Counter.builder("identity_mismatch_total")
-                .description("Records whose client user field disagrees with the key owner")
-                .register(registry);
         this.srcFallback = Counter.builder("records_src_fallback_total")
                 .description("Records with no session_id and no QoderWork event, "
                         + "routed to src=qoder only as a fallback")
@@ -59,10 +55,6 @@ public class ServerMetrics {
 
     public void recordRejected() {
         rejected.increment();
-    }
-
-    public void recordIdentityMismatch() {
-        identityMismatch.increment();
     }
 
     public void recordSrcFallback() {

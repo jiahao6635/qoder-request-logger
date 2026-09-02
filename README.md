@@ -15,7 +15,7 @@ graph LR
     D --> E["tools/audit-report.js<br/>Markdown 审计报告"]
 ```
 
-一条记录的旅程：插件 hook 捕获事件 → 本地 NDJSON 缓冲（按天分割）→ HTTP 上报 Server（API Key 认证、限流、去重、字段归一化盖章）→ 落盘 spool → 定时 gzip 聚合上传 OSS（`logs/qoder/v1/date=.../user=.../src=.../part-*.jsonl.gz`）。
+一条记录的旅程：插件 hook 捕获事件 → 本地 NDJSON 缓冲（按天分割）→ HTTP 上报 Server（共享 API Key 鉴权、限流、去重、按记录内 `email` 盖章归因）→ 落盘 spool → 定时 gzip 聚合上传 OSS（`logs/qoder/v1/date=.../user=.../src=.../part-*.jsonl.gz`）。
 
 ## 仓库结构
 
@@ -56,8 +56,8 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 | `POST /api/logs/batch` | gzip 批量日志 |
 | `GET /actuator/health` | 健康检查 |
 
-- 所有 ingest 端点要求 `X-API-Key` 请求头；Key 注册表 `api-keys.yml` 只存 SHA-256 哈希（用 `tools/gen-api-key.sh` 生成），文件 mtime 变化自动热加载。
-- 防护默认值：限流 30 req/s/Key（429 + Retry-After）、body 上限 8MB（413）、spool 磁盘用量 ≥90% 返回 503（背压）、优雅停机 ≤120s。
+- 所有 ingest 端点要求 `X-API-Key` 请求头；部署单条**全公司共享 Key**（仅接口鉴权，不参与归因——归因以记录内 `email` 为准），注册表 `api-keys.yml` 只存 SHA-256 哈希（用 `tools/gen-api-key.sh` 生成），文件 mtime 变化自动热加载。
+- 防护默认值：限流 30 req/s/客户端 IP（429 + Retry-After）、body 上限 8MB（413）、spool 磁盘用量 ≥90% 返回 503（背压）、优雅停机 ≤120s。
 
 ## 插件
 
@@ -65,16 +65,16 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 
 - **仅本地模式**：`QODER_LOG_SERVER_URL` 留空时只写本地 JSON Lines 日志（按天分割），不上报。
 - **上报模式**：`QODER_LOG_UPLOAD_MODE=legacy`（逐条 push + outbox 重试，默认）或 `cursor`（offset 跟踪 gzip 批量上传）。
-- **统一分发模式（推荐）**：`QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 留空时回退读取本机凭据文件 `~/.qoder/log-credentials.json`（`QODER_LOG_CREDENTIALS_FILE` 可覆盖路径），个人凭据由 IT 按机器下发、不进插件包，全公司一个插件包（见 runbook §4.6）。
+- **统一分发模式（推荐）**：`gen-hooks.py --server-url ... --api-key qk_<共享Key>` 把 Server 地址与全公司共享 Key 直接写进统一包，一个包全员安装；归因不依赖 Key（以记录内 `email` 为准）。本机凭据文件 `~/.qoder/log-credentials.json`（`QODER_LOG_CREDENTIALS_FILE` 可覆盖路径）仅作为单机覆盖的可选兜底（见 runbook §4.5）。
 
 关键环境变量（配置于 `plugin/hooks/hooks.json` 各事件的 `env` 块）：
 
 | 变量 | 说明 |
 | --- | --- |
 | `QODER_LOG_SERVER_URL` | Server 地址；留空 = 仅本地日志 |
-| `QODER_LOG_API_KEY` | 员工专属 API Key（`qk_` 前缀）；留空时回退读取凭据文件 |
-| `QODER_LOG_USER_ID` | 用户标识（公司邮箱，身份以 Server 端 Key 注册表为准）；留空时同上回退 |
-| `QODER_LOG_CREDENTIALS_FILE` | 本机凭据文件路径（默认 `~/.qoder/log-credentials.json`，格式 `{api_key, user_id}`，IT 按机器下发） |
+| `QODER_LOG_API_KEY` | 上报鉴权 API Key（`qk_` 前缀，统一分发包内置全公司共享 Key）；留空时回退读取凭据文件 |
+| `QODER_LOG_USER_ID` | 企业身份覆盖：作为记录 `email`（Server 归因用）与 `client_id`；统一分发包留空，由 QoderWork payload / git 配置提供；留空时同上回退 |
+| `QODER_LOG_CREDENTIALS_FILE` | 本机凭据文件路径（默认 `~/.qoder/log-credentials.json`，格式 `{api_key, user_id}`；仅单机覆盖场景使用，统一包无需下发） |
 | `QODER_LOG_UPLOAD_MODE` | `legacy` \| `cursor` |
 | `QODER_LOG_UPLOAD_INTERVAL_SEC` | 上报间隔（秒） |
 | `QODER_LOG_REDACT` | `1` 开启凭据脱敏 |
@@ -94,7 +94,7 @@ node tools/mock-log-server.js  # 本地 mock Server（插件联调用）
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/runbook.md](docs/runbook.md) | 部署运维手册：OSS 基座检查单、RAM 最小权限策略、Server 部署、Key 分发 |
+| [docs/runbook.md](docs/runbook.md) | 部署运维手册：OSS 基座检查单、RAM 最小权限策略、Server 部署、共享 Key 管理 |
 | [docs/oss-path-spec.md](docs/oss-path-spec.md) | OSS 对象键三方契约（Server / 审计工具 / 插件），破坏性变更须升版 `v2/` |
 | [docs/capacity-planning.md](docs/capacity-planning.md) | 容量与成本论证 |
 
@@ -108,5 +108,5 @@ node tools/mock-log-server.js  # 本地 mock Server（插件联调用）
 ## 安全红线
 
 - `server/.env`（OSS AK/SK）与真实 Key 注册表**绝不入库**，已由 `.gitignore` 兜底。
-- Server 只存 Key 的 SHA-256 哈希，明文 Key 仅在生成时分发给员工；OSS AK/SK 仅经环境变量注入。
+- Server 只存 Key 的 SHA-256 哈希，明文共享 Key 仅在生成/打包瞬间存在于安全渠道；OSS AK/SK 仅经环境变量注入。
 - OSS 写权限 RAM 策略硬编码 `logs/qoder/*` 前缀（见 runbook §1.2），AK 泄露也无法触达其他业务前缀。

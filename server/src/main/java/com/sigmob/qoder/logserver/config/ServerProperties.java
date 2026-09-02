@@ -18,8 +18,8 @@ public class ServerProperties {
     /** Maximum decompressed batch body size in MiB; beyond it the API returns 413. */
     private int maxBodyMb = 8;
 
-    /** Fixed-window rate limit (requests per second) applied per API key. */
-    private int rateLimitPerKey = 30;
+    /** Fixed-window rate limit (requests per second) applied per client IP. */
+    private int rateLimitPerIp = 30;
 
     /** Segment rotation threshold in MiB. */
     private int rotateSizeMb = 64;
@@ -97,12 +97,12 @@ public class ServerProperties {
         this.maxBodyMb = maxBodyMb;
     }
 
-    public int getRateLimitPerKey() {
-        return rateLimitPerKey;
+    public int getRateLimitPerIp() {
+        return rateLimitPerIp;
     }
 
-    public void setRateLimitPerKey(int rateLimitPerKey) {
-        this.rateLimitPerKey = rateLimitPerKey;
+    public void setRateLimitPerIp(int rateLimitPerIp) {
+        this.rateLimitPerIp = rateLimitPerIp;
     }
 
     public int getRotateSizeMb() {

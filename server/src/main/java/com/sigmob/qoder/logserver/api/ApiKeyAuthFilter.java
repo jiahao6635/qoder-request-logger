@@ -21,14 +21,15 @@ import jakarta.servlet.http.HttpServletResponse;
  * {@code /api/logs} and {@code /api/logs/batch} are intercepted; everything
  * else (notably {@code /api/health}) passes through untouched.
  *
- * <p>Order of checks: shutdown (503) -> disk watermark (503) -> API key (401)
- * -> per-key rate limit (429). Successful auth exposes the owner user id as a
- * request attribute consumed by the controller.</p>
+ * <p>The deployment uses a single shared API key: it only authenticates the
+ * request (proves the sender installed the plugin), records are attributed by
+ * their own top-level {@code email} (see {@link com.sigmob.qoder.logserver.ingest.RecordNormalizer
+ * RecordNormalizer}). Order of checks: shutdown (503) -> disk watermark (503)
+ * -> API key (401) -> per-client-IP rate limit (429).</p>
  */
 @Component
 public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
-    public static final String OWNER_ATTRIBUTE = "audit.owner";
     private static final String RETRY_AFTER_HEADER = "Retry-After";
 
     private final ApiKeyRegistry registry;
@@ -67,11 +68,13 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             writeError(response, 401, "invalid_api_key", null);
             return;
         }
-        if (!rateLimiter.tryAcquire(entry.get().userId())) {
+        // Shared-key deployment: the key no longer identifies a person, so the
+        // fixed-window limiter runs per client IP (direct connections on the
+        // internal network; behind a reverse proxy, the proxy addresses).
+        if (!rateLimiter.tryAcquire(request.getRemoteAddr())) {
             writeError(response, 429, "rate_limited", 1);
             return;
         }
-        request.setAttribute(OWNER_ATTRIBUTE, entry.get().userId());
         chain.doFilter(request, response);
     }
 

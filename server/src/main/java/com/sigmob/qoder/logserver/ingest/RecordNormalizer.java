@@ -15,8 +15,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  *
  * <p>Responsibilities: Beijing date derivation (record timestamp, +8h), source
  * classification (qoder vs qoderwork), OSS user-segment sanitization and the
- * ingest stamps ({@code ingest_user}, {@code ingest_time}). Stateless and side
- * effect free, so it is trivially testable.</p>
+ * ingest stamps ({@code ingest_user}, {@code ingest_time}). The record owner
+ * is the client-declared enterprise {@code email} (schema 1.1.0 flattens it
+ * onto every saved record; records without one are never collected) - the
+ * shared API key only authenticates the request, it does not attribute it.
+ * Stateless and side effect free, so it is trivially testable.</p>
  */
 public final class RecordNormalizer {
 
@@ -35,16 +38,16 @@ public final class RecordNormalizer {
 
     /** Normalized view of one record, ready for spool routing. */
     public record Normalized(ObjectNode stamped, String date, String src, String userSegment,
-                             boolean identityMismatch, boolean srcFallback) {}
+                             boolean srcFallback) {}
 
     /**
      * Stamps the record with owner + server time and derives routing fields.
      *
-     * @param record raw JSON object from the client (never modified in place)
-     * @param owner  user id bound to the API key that delivered the record
+     * @param record raw JSON object from the client (never modified in place);
+     *               the owner is derived from its top-level {@code email}
      * @param now    server time used for {@code ingest_time} and timestamp fallback
      */
-    public static Normalized normalize(JsonNode record, String owner, Instant now) {
+    public static Normalized normalize(JsonNode record, Instant now) {
         if (record == null || !record.isObject()) {
             throw new IllegalArgumentException("record must be a JSON object");
         }
@@ -52,13 +55,12 @@ public final class RecordNormalizer {
         Instant recordTime = parseTimestamp(record).orElse(now);
         String date = LocalDate.ofInstant(recordTime, SHANGHAI).toString();
         String src = deriveSrc(record);
+        String owner = extractOwner(record);
         String userSegment = sanitizeUser(owner);
-        boolean mismatch = identityMismatch(record, owner);
-        boolean fallback = srcFallback(record);
 
         stamped.put(FIELD_INGEST_USER, owner == null ? "" : owner);
         stamped.put(FIELD_INGEST_TIME, now.toString());
-        return new Normalized(stamped, date, src, userSegment, mismatch, fallback);
+        return new Normalized(stamped, date, src, userSegment, srcFallback(record));
     }
 
     /**
@@ -132,19 +134,17 @@ public final class RecordNormalizer {
     }
 
     /**
-     * The client-side {@code email} field (flattened enterprise identity) is
-     * spoofable; flag when it disagrees with the key owner so the mismatch can
-     * be counted as a metric.
+     * Record owner: the client-declared enterprise {@code email} (trimmed,
+     * non-empty). The collector only saves records that carry an enterprise
+     * identity, so {@code null} here means an unusual/external sender and the
+     * record lands in the {@code unknown} user segment.
      */
-    public static boolean identityMismatch(JsonNode record, String owner) {
+    public static String extractOwner(JsonNode record) {
         JsonNode email = record.get("email");
         if (email == null || !email.isTextual()) {
-            return false;
+            return null;
         }
         String claimed = email.asText().trim();
-        if (claimed.isEmpty()) {
-            return false;
-        }
-        return owner == null || !claimed.equalsIgnoreCase(owner.trim());
+        return claimed.isEmpty() ? null : claimed;
     }
 }

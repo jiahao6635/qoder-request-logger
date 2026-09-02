@@ -59,7 +59,7 @@ class SpoolWriteFailureTest {
                 """.formatted(OWNER, sha));
         registry.add("audit.api-keys-file", () -> keys.toString());
         registry.add("audit.spool-dir", () -> temp.resolve("spool").toString());
-        registry.add("audit.rate-limit-per-key", () -> "1000");
+        registry.add("audit.rate-limit-per-ip", () -> "1000");
         registry.add("audit.close-idle-seconds", () -> "3600");
         registry.add("audit.upload-interval-seconds", () -> "3600");
         registry.add("audit.disk.high-watermark", () -> "1.0");

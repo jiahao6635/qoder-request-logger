@@ -77,7 +77,6 @@ public class LogIngestController {
     /** Single-record endpoint used by the shipped hook client (fire-and-forget POST). */
     @PostMapping("/api/logs")
     public ResponseEntity<Map<String, Object>> ingestSingle(HttpServletRequest request) throws IOException {
-        String owner = ownerOf(request);
         byte[] body = readBody(request);
         long accepted = 0;
         long rejected = 0;
@@ -87,7 +86,7 @@ public class LogIngestController {
             // received口径: every payload that reached parsing counts, object or not
             metrics.recordReceivedSingle(1);
             if (node != null && node.isObject()) {
-                switch (processRecord(node, owner)) {
+                switch (processRecord(node)) {
                     case ACCEPTED -> accepted = 1;
                     case REJECTED -> rejected = 1;
                     case DEDUPED -> deduped = 1;
@@ -106,7 +105,6 @@ public class LogIngestController {
     /** NDJSON batch endpoint; each line is validated independently (poison isolation). */
     @PostMapping("/api/logs/batch")
     public ResponseEntity<Map<String, Object>> ingestBatch(HttpServletRequest request) throws IOException {
-        String owner = ownerOf(request);
         byte[] body = readBody(request);
         long accepted = 0;
         long rejected = 0;
@@ -129,7 +127,7 @@ public class LogIngestController {
                 metrics.recordRejected();
                 continue;
             }
-            switch (processRecord(node, owner)) {
+            switch (processRecord(node)) {
                 case ACCEPTED -> accepted++;
                 case REJECTED -> rejected++;
                 case DEDUPED -> deduped++;
@@ -139,11 +137,8 @@ public class LogIngestController {
         return acknowledge(accepted, rejected, deduped);
     }
 
-    private Outcome processRecord(JsonNode node, String owner) {
-        RecordNormalizer.Normalized normalized = RecordNormalizer.normalize(node, owner, Instant.now());
-        if (normalized.identityMismatch()) {
-            metrics.recordIdentityMismatch();
-        }
+    private Outcome processRecord(JsonNode node) {
+        RecordNormalizer.Normalized normalized = RecordNormalizer.normalize(node, Instant.now());
         if (normalized.srcFallback()) {
             metrics.recordSrcFallback();
         }
@@ -162,14 +157,9 @@ public class LogIngestController {
             // failures (and similar) unchecked, and skipping the compensation here
             // would make a retry land in dedup and the record be silently lost
             dedup.invalidate(dedupKey);
-            log.error("spool append failed for record of {}", owner, e);
+            log.error("spool append failed for record of {}", normalized.userSegment(), e);
             throw new SpoolWriteException();
         }
-    }
-
-    private String ownerOf(HttpServletRequest request) {
-        Object owner = request.getAttribute(ApiKeyAuthFilter.OWNER_ATTRIBUTE);
-        return owner == null ? null : owner.toString();
     }
 
     /**

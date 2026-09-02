@@ -59,7 +59,7 @@ class LogIngestControllerTest {
                 """.formatted(OWNER, sha256Hex(API_KEY)));
         registry.add("audit.api-keys-file", () -> keys.toString());
         registry.add("audit.spool-dir", () -> temp.resolve("spool").toString());
-        registry.add("audit.rate-limit-per-key", () -> "1000");
+        registry.add("audit.rate-limit-per-ip", () -> "1000");
         registry.add("audit.close-idle-seconds", () -> "3600");
         registry.add("audit.upload-interval-seconds", () -> "3600");
         // this dev machine's data volume is ~98% full; disable disk backpressure noise here

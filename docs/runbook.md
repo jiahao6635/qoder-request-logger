@@ -124,12 +124,12 @@ ossutil rm oss://<bucket>/logs/qoder/v1/_manifest/probe.txt
 | 3 | 客户端本地始终双写 | 本地 `$QODER_LOG_DIR/requests_<D>.jsonl`（默认 `~/.qoder/logs`）**永远开启**，HTTP 上报是增量能力（`QODER_LOG_SERVER_URL` 非空才启用） | 天然回滚路径（见下）与对账数据源 |
 | 4 | 回滚方案 | 清空 `hooks.json` 各事件 `env` 中的 `QODER_LOG_SERVER_URL`（置 `""`），插件回到纯本地现状 | 零代码回滚。注意：Server 停机期间客户端**本地继续落盘、上报失败进 outbox**（`~/.qoder/logs/.request-logger/outbox.ndjson`，上限 8MB），游标停滞；恢复后下一次 hook 调用自动 drain 追平，无需人工干预 |
 | 5 | outbox 有界 | 客户端 outbox 上限 8MB（硬编码常量 `outboxMaxBytes`，见 `plugin/hooks/log-request.js` CONFIG），超限后新失败记录被丢弃 | 长时间断连场景以 Server spool + OSS 已传数据为准；对账用 `oss-reconcile.js` |
-| 6 | 记录自报身份不可信 | 归因以 Server 端 API Key 注册表为准（`ingest_user` 盖章），记录内拍平的 `email` 字段仅交叉校验（不一致计入 identityMismatch 指标） | 见 `docs/oss-path-spec.md` §5 |
+| 6 | **记录身份为客户端自报** | 归因以记录内拍平的企业身份 `email` 字段为准（`ingest_user` 盖章与 OSS `user=` 分区均取自它）；共享 API Key 仅做接口鉴权，不参与归因 | 接受的取舍：内网环境 + 用量消耗有 Qoder 官方后台数据兜底，不防御内网恶意伪造；换机/轮转 Key 不影响归因连续性（`email` 不变 → OSS `user=` 分区不变） |
 | 7 | **工作区代码合并 ≠ 生产生效** | 生产 hook 由 `~/.qoder/plugins` 缓存内的**已安装插件副本**执行，本仓库工作区的改动不会自动到达客户端 | 重新安装/发布插件后才生效；装后用 `grep -m1 '"email"' ~/.qoder/logs/requests_*.jsonl` 确认新采集器已在运行（1.1.0 = 企业身份拍平到最外层、无企业身份不采集的版本） |
 | 8 | legacy→cursor 切换后旧 outbox.ndjson 成为孤儿 | cursor 模式只从日文件游标上传，不读旧 outbox | **无数据丢失**：outbox 里的记录同时也是本地日文件内容，会被 cursor 补传，服务端去重；确认切换稳定后可手动清理 `~/.qoder/logs/.request-logger/outbox.ndjson` |
 | 9 | cursor 模式单行超 2MB 时该文件游标停滞 | 单个 batch 上限 2MB（`batchMaxBytes`）；某行完整内容超过该上限时，游标停在该行开头且无法跨行推进，该文件此后不再上传 | 记录行超限极罕见（需单条原始事件超 2MB），属已知边界；数据仍在本地日文件不丢失，需要时可用 `oss-audit.js fetch --from-local` 类本地手段审计 |
 | 10 | **无企业身份的记录不采集** | 采集端归因门控：拿不到企业身份（payload `extra.user`，含会话缓存回填）的记录直接丢弃，不落盘、不上传；jq 兜底采集器同样只保存携带 `extra.user` 的事件 | 不提供 `extra.user` 的入口（如部分 CLI 会话）将**没有任何采集记录**，属预期行为；排查“某人记录缺失”时先确认其客户端事件是否携带 `extra.user` |
-| 11 | **凭据文件缺失 = 仅本地模式** | 统一分发包中 `QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 留空，采集器回退读取每台机器的本机凭据文件（默认 `~/.qoder/log-credentials.json`）；文件缺失属预期状态（未配置，静默仅本地），文件存在但损坏/缺字段时写一条 `credentials` 诊断到 `logger-error.log`（只报原因与路径，不回显内容） | 新机器未下发凭据文件时表现为“本地有日志、Server 无接收”，coverage 报告会识别为未上报；排查先查凭据文件是否存在且格式正确（§4.6） |
+| 11 | **统一包内置共享 Key，凭据文件仅作可选兜底** | 统一分发包通过 `gen-hooks.py --api-key` 直接内置全公司共享 Key（接口鉴权用）；采集器的凭据文件 fallback（默认 `~/.qoder/log-credentials.json`，`QODER_LOG_CREDENTIALS_FILE` 可改路径）保留为可选能力，env 非空时优先，文件缺失静默、存在但损坏时写 `credentials` 诊断（不回显内容） | 正常部署**无需**下发凭据文件；仅单机临时换 Key/灰度过渡时使用；诊断排查见 §7.4 第 5 步 |
 
 ---
 
@@ -350,6 +350,8 @@ docker compose logs qoder-log-server | grep -E 'shutdown: rotating|Graceful shut
 
 ## 4. API Key 管理
 
+部署采用**全公司共享 Key**：一个 Key 完成 ingest 接口鉴权（证明发送方安装了本插件），日志归因不依赖 Key——以记录内企业身份 `email` 为准（§2 第 6 条）。限流维度为客户端 IP（默认 30 req/s/IP，`audit.rate-limit-per-ip`）。
+
 ### 4.1 Key 格式与生成
 
 - 格式：`qk_<32 位小写十六进制>`（共 36 字符），例如 `qk_1f2e3d4c5b6a7988071625344352abba`。
@@ -367,73 +369,60 @@ echo -n "qk_1f2e3d4c5b6a7988071625344352abba" | shasum -a 256 | awk '{print $1}'
 
 ### 4.2 注册表 api-keys.yml
 
-Server 只存**哈希**，明文 Key 仅在分发瞬间存在于 IT 的安全渠道（见 §5 G1），Server 泄露不泄露凭据。
+注册表只有一条记录（共享 Key）。Server 只存**哈希**，明文 Key 仅在生成/打包瞬间存在于安全渠道。
 
 ```yaml
 # /etc/qoder-log-server/api-keys.yml
 keys:
-  - user_id: jiahao.li@sigmob.com      # 公司邮箱；OSS user= 分区与 ingest_user 的来源
+  - user_id: qoder-fleet@sigmob.com    # 占位标签，不参与归因
     key_sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
-    display_name: 李嘉豪
-    enabled: true
-  - user_id: former.employee@sigmob.com
-    key_sha256: 240cf57808f0e18a2a6ba51a48aee0ecdca4b3ff40ba4d9b9cf1b4d5a4b2f8c3
-    display_name: 离职员工（已停用）
-    enabled: false                      # false = 吊销：请求被拒，历史数据保留
+    display_name: 全公司共享 Key
+    enabled: true                       # false = 全局吊销：所有上报被拒（401）
 ```
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `user_id` | 是 | 公司邮箱（小写）；OSS `user=` 分区归一化白名单 `[a-z0-9._@-]` 清洗前的原始登记值 |
+| `user_id` | 是 | 占位标签（历史字段，不再作为归因或 OSS 分区来源） |
 | `key_sha256` | 是 | 明文 Key 的 SHA-256 hex（§4.1 命令产出） |
-| `display_name` | 是 | 花名/姓名，仅用于报表展示与 coverage 对比 |
-| `enabled` | 是 | `true`/`false`；`false` 即吊销 |
+| `display_name` | 是 | 展示用 |
+| `enabled` | 是 | 全局开关；`false` 即所有客户端上报被拒 |
 
 ### 4.3 热加载
 
 - Server 每 **5 分钟（300s）** 重读一次 `api-keys.yml`（`ApiKeyRegistry` 内 `@Scheduled(fixedDelay = 300_000)` 固定周期，不可配置）。
-- 新增/修改/吊销**无需重启**；最迟 5 分钟后生效（生效前的短暂窗口内旧状态继续适用，属可接受延迟）。
+- 轮转/吊销**无需重启**；最迟 5 分钟后生效（生效前的短暂窗口内旧状态继续适用，属可接受延迟）。
 
-### 4.4 吊销流程（离职/疑似泄露）
+### 4.4 轮转流程（Key 疑似泄露/周期轮转）
 
-| 步骤 | 操作 | 说明 |
-| --- | --- | --- |
-| 1 | 编辑 `api-keys.yml`，将该条目 `enabled: false` | ≤5 分钟后该 Key 全部上报被拒（401）。客户端收到 401/403 后会自动熔断 24h（不再重放，401 期间的记录仅存本地日文件，不进 outbox；见 §2 已知限制） |
-| 2 | 疑似泄露时另见 §6 的"单 Key QPS 异常"告警联动 | 从 OSS 访问日志与 Server 指标回溯泄露期间写入 |
-| 3 | 通知 IT 清除该机器凭据文件中的 Key（统一包模式：删除 `~/.qoder/log-credentials.json` 或置空 `api_key`；个性化包模式：移除 `hooks.json` 中的 `QODER_LOG_API_KEY`） | 防止客户端对失效 Key 长期重试；清除后客户端回落到仅本地模式 |
-| 4 | 历史数据不动 | 吊销只影响增量；该用户历史分区照常可审计 |
-
-### 4.5 换发流程（Key 疑似泄露/周期轮转）
+共享 Key 不存在单人吊销——需要停用某个人的采集时，直接在其机器卸载插件即可（归因与数据不受影响）。Key 本身的轮转：
 
 | 步骤 | 操作 |
 | --- | --- |
 | 1 | 按 §4.1 生成新明文 Key + 哈希 |
-| 2 | `api-keys.yml` 中该 `user_id` 条目：`key_sha256` 换为新哈希（**新旧 Key 短暂并存方案**：临时加一条同 `user_id` 新 Key 条目，老条目延迟 1~2 个工作日置 `enabled: false`，覆盖员工未及时更新配置的窗口） |
-| 3 | 安全渠道向员工分发新 Key，由 IT 更新该机器凭据文件 `~/.qoder/log-credentials.json` 的 `api_key`（个性化包模式则更新 `hooks.json` 的 `QODER_LOG_API_KEY`；凭据文件每次 hook 调用时热读，无需重启） |
-| 4 | 确认新 Key 上报正常（Server 指标 `records_received_total` 恢复增长）后，老条目 `enabled: false` |
-| 5 | 归因连续性：`user_id` 不变 → OSS `user=` 分区不变，新旧 Key 数据自然落在同一前缀下 |
+| 2 | `api-keys.yml` 临时并存新旧两条，≤5 分钟后新 Key 生效 |
+| 3 | 用新 Key 重新打包插件并分发（`gen-hooks.py --api-key qk_<新Key>`，§5.1）；客户端对 401 的熔断行为见 §2 第 4 条（过渡期记录仅存本地，恢复后自动追平） |
+| 4 | coverage 报告确认全员上报恢复后，老条目 `enabled: false` |
+| 5 | 归因连续性：归因靠记录内 `email`，与 Key 无关，轮转不影响 OSS `user=` 分区 |
 
-### 4.6 客户端凭据文件（统一分发包的身份落点）
+### 4.5 客户端凭据文件（可选的单机覆盖）
 
-插件统一分发包中 `QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 留空（由 `gen-hooks.py` 不传 `--api-key/--user-id` 生成），采集器在两者为空时回退读取**每台机器的本机凭据文件**：
+正常部署**不需要**此文件（统一包已内置共享 Key）。采集器保留的 fallback 能力：env `QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 均为空时，读取本机凭据文件：
 
 ```json
 // ~/.qoder/log-credentials.json（权限 600，属主为使用者本人）
 {
   "api_key": "qk_1f2e3d4c5b6a7988071625344352abba",
-  "user_id": "jiahao.li@sigmob.com"
+  "user_id": "placeholder@sigmob.com"
 }
 ```
 
 | 规则 | 说明 |
 | --- | --- |
-| 优先级 | 环境变量非空时优先（个性化包场景向后兼容）；仅 env 提供其一、文件提供另一字段时自动合并 |
-| 自定义路径 | 环境变量 `QODER_LOG_CREDENTIALS_FILE` 覆盖默认路径（写进 `hooks.json` env 块即可，全公司统一） |
-| 文件缺失 | 静默仅本地模式（不上报，无错误日志），属新机器未配置的预期状态 |
+| 优先级 | env 非空时优先（统一包场景 env 恒非空，此文件不会被读）；env 提供其一、文件提供另一字段时自动合并 |
+| 自定义路径 | 环境变量 `QODER_LOG_CREDENTIALS_FILE` 覆盖默认路径 |
+| 文件缺失 | 静默回落到 env 值（统一包场景等价无影响）；env 也为空时为仅本地模式 |
 | 文件损坏 | 每次事件写一条 `credentials` 诊断到 `logger-error.log`，只含原因与路径，**不回显文件内容** |
-| IT 下发（macOS 示例） | `install -m 600 /dev/null ~/.qoder/log-credentials.json && printf '{"api_key":"qk_…","user_id":"…@sigmob.com"}' > ~/.qoder/log-credentials.json`（经 MDM/登录脚本执行，凭据不进插件包、不进 Git） |
-
-> 明文 Key 在凭据文件中**明文存放**（采集器发请求时需要原文），与 §4.1 的设计一致：明文只存在于员工本机与分发瞬间，Server 侧永远只有哈希。文件权限 600 + 属主校验由下发脚本保证。
+| 适用场景 | 单机临时换 Key（如某机器需独立吊销/灰度过渡）：下发只含该机 Key 的凭据文件，并在注册表登记该 Key |
 
 ---
 
@@ -444,23 +433,19 @@ keys:
 ### 5.1 准备动作（每批通用）
 
 ```bash
-# 1) 用 gen-hooks.py 生成 hooks.json 模板（默认 13 个交付事件，env 值为空；
-#    加 --all-events 才是 26 事件全集）
-python3 tools/gen-hooks.py        # 输出: wrote plugin/hooks/hooks.json (13 events)
+# 1) 生成全公司共享 Key（一次性，发布前完成；注册表登记其哈希，见 §4.2）
+echo "qk_$(openssl rand -hex 16)"
 
-# 2) 统一分发包（推荐）：只注入公司级配置，个人凭据不进插件包：
-#    python3 tools/gen-hooks.py --server-url https://qoder-log.internal.sigmob.com/api/logs
-#    个人 Key / user_id 由 IT 按机器下发凭据文件（格式与下发命令见 §4.6）。
-#  个性化包（遗留模式）：也可为每人生成个性化包（env 优先级高于凭据文件）：
-#    QODER_LOG_SERVER_URL = https://qoder-log.internal.sigmob.com/api/logs
-#    QODER_LOG_API_KEY   = qk_<该员工的Key>
-#    QODER_LOG_USER_ID   = <该员工公司邮箱>
-#    其余保持默认：QODER_LOG_REDACT=1、QODER_LOG_INCLUDE_TRANSCRIPT 按审计范围定
+# 2) 统一分发包：共享 Key + Server 地址写进包（归因不依赖 Key，无需 user_id 参数）
+python3 tools/gen-hooks.py \
+  --server-url https://qoder-log.internal.sigmob.com/api/logs \
+  --api-key qk_<共享Key>
+#    默认 13 个交付事件；加 --all-events 才是 26 事件全集
 ```
 
 | 阶段 | 范围 | 时长 | 关键动作 | 通过标准 |
 | --- | --- | --- | --- | --- |
-| **G1 试点** | **3~5 人** | **2 个工作日** | 零代码、仅配置：`gen-hooks.py` 生成个性化 `hooks.json` 并安装到试点机 | ① OSS 路径正确：`ossutil ls` 出现 `date=/user=/src=` 三级分区且符合契约 ② 试点机无卡顿：IDE 内正常编码，hook 均 `async`/短 timeout，主观无可感延迟 ③ Server health 正常（§3.5）④ **首日专项检查**：试点机 `~/.qoder/logs/.request-logger/logger-error.log` 无增长；Server `records_received_total` 与试点机本地 `requests_<D>.jsonl` 行数一致 |
+| **G1 试点** | **3~5 人** | **2 个工作日** | 零代码、仅配置：`gen-hooks.py` 生成统一 `hooks.json`（内置共享 Key）并安装到试点机 | ① OSS 路径正确：`ossutil ls` 出现 `date=/user=/src=` 三级分区且符合契约 ② 试点机无卡顿：IDE 内正常编码，hook 均 `async`/短 timeout，主观无可感延迟 ③ Server health 正常（§3.5）④ **首日专项检查**：试点机 `~/.qoder/logs/.request-logger/logger-error.log` 无增长；Server `records_received_total` 与试点机本地 `requests_<D>.jsonl` 行数一致 |
 | **G2 扩量** | **20~50 人** | **3~5 天** | 切换 `QODER_LOG_UPLOAD_MODE=cursor`（游标续传模式，重启/断线不重传已确认记录）；每天跑对账 | `node tools/oss-reconcile.js --day <D> --manifest oss://<bucket>/logs/qoder/v1/_manifest/date=<D>.json.gz --local-dir ~/.qoder/logs` 对账结果**「本地行数 == OSS 记录数」零差异**，连续 3 天零差异后进 G3 |
 | **G3 全量** | 50~500 人 | 长期 | 全员分发；稳定后开启 `QODER_LOG_LOCAL_RETENTION_DAYS=14`（本地日志只留 14 天，空间不再随时间无限增长） | coverage 报告（`oss-audit.js coverage --date <D>`）显示全员有上报；未上报名单仅剩 §2 第 2 条的无 Node 机器 |
 
@@ -487,12 +472,12 @@ node tools/oss-audit.js fetch --date 2026-09-01 --user jiahao.li@sigmob.com --sr
 
 | 指标 | 含义 | 采集要点 |
 | --- | --- | --- |
-| `records_received_total` | 收到的记录数（counter；tag `endpoint=single|batch`） | 按 Key 维度细分（泄露检测依赖 per-Key QPS） |
+| `records_received_total` | 收到的记录数（counter；tag `endpoint=single|batch`） | 共享 Key 部署无 per-Key 细分维度；单人用量按 OSS `user=` 分区统计（§5.2），入口限流为 per-客户端 IP（§4） |
 | `records_deduped_total` | 去重丢弃数（客户端 outbox 重试导致的重复） | 与 received 比值突增 = 客户端重传异常 |
 | `spool_bytes`（gauge，spool 字节深度） | 待上传 spool 目录总字节数 | `du -sb /data/spool/qoder` 即可兜底采集 |
 | `upload_lag_seconds`（gauge） | 最老未上传段的年龄（秒） | 段文件 mtime 与当前时间差 |
 | `oss_upload_total`（tag `result=success|failure`） | OSS 上传成功/失败次数 | failure 突增 = OSS 链路异常 |
-| `http_server_requests_seconds`（Spring MVC 自带，tag 含 `status`） | 入口 HTTP 状态码分布 | 401 突增 = Key 批量失效；5xx 见 §6.2。另可辅助 `/api/health` 的 `received_total`/`rejected_total` 快照 |
+| `http_server_requests_seconds`（Spring MVC 自带，tag 含 `status`） | 入口 HTTP 状态码分布 | 401 突增 = 共享 Key 失效或轮转切换窗口（§4.4）；5xx 见 §6.2。另可辅助 `/api/health` 的 `received_total`/`rejected_total` 快照 |
 
 ### 6.2 告警阈值
 
@@ -500,7 +485,7 @@ node tools/oss-audit.js fetch --date 2026-09-01 --user jiahao.li@sigmob.com --sr
 | --- | --- | --- |
 | **P2 上传积压** | `spool.bytes > 5GB` **或** `upload.lag > 2h` | 检查 OSS 可用性/网络；持续恶化按 §7.1 处置 |
 | **P1 服务异常** | 5xx 比例 > 1% 持续 5 分钟 | 查 Server 日志与磁盘（90% 触发 503，见下） |
-| **P2 泄露检测** | 单 Key QPS 异常（例如 > 50 req/s，正常单人峰值 ≪ 5 req/s） | 立即按 §4.4 吊销流程处置，回溯 OSS 访问日志 |
+| **P2 异常流量** | Server 总 QPS 异常（例如 > 50 req/s，正常全员日常峰值远低于此），或 429 突增 | 按客户端 IP 定位异常来源；确认 Key 泄露则按 §4.4 轮转流程换 Key，并回溯 OSS 访问日志 |
 | **P2 磁盘** | spool 盘使用率 > 80% 告警；> 90% Server 主动返回 **503 劝退**（客户端转 outbox，不丢数据） | 扩盘（§`capacity-planning.md` §6）或排障 OSS 链路 |
 | **P3 客户端静默** | 某活跃员工当日 records_received_total 无增长（或 coverage 报告无此人） | 先查是否无 Node 兜底机（§2 第 2 条），再查 `logger-error.log` 与 CA 配置（§2 第 1 条） |
 
@@ -536,10 +521,10 @@ curl -s http://127.0.0.1:8080/actuator/health
 
 | 归因维度 | 依赖 | 换机影响 |
 | --- | --- | --- |
-| **人（user= 分区）** | API Key 注册表 `user_id` | **零影响**：新机装同一个人的 Key（或按 §4.5 换发，`user_id` 不变），OSS 数据继续落在同一 `user=` 前缀 |
+| **人（user= 分区）** | 记录内 `email`（客户端自报，§2 第 6 条） | **零影响**：同一员工在新机登录同一企业账号，`email` 不变 → OSS 数据继续落在同一 `user=` 前缀；与 Key、注册表均无关 |
 | 机器（审计下钻） | 记录自 1.1.0 起不再携带机器级字段（`hostname`/`client_id`/`os_user` 已移除） | 机器维度只能靠旁证（如 `cwd` 路径中的用户名、会话时间窗口）；审计主链路按"人 → 会话"下钻，换机不影响人的归因 |
 
-处置：旧机 Key 若有泄露风险按 §4.4 吊销；新机走 §5.1 分发流程。
+处置：新机直接走 §5.1 分发流程（统一包内置共享 Key，归因随 `email` 自动连续）；旧机卸载插件即停止采集，已归档数据不受影响。
 
 ### 7.4 客户端上报静默失败排查（最高频工单）
 
@@ -556,12 +541,12 @@ wc -l ~/.qoder/logs/requests_$(date +%F).jsonl
 # 4) CA 问题（§2 第 1 条）：确认 NODE_EXTRA_CA_CERTS 指向的证书文件存在
 ls -l ~/.qoder/plugins/ca/sigmob-root.crt
 
-# 5) 凭据文件（§2 第 11 条，统一分发包模式）：存在且两个字段齐全
+# 5) 凭据文件（§2 第 11 条；仅单机覆盖场景存在，统一包内置 Key 时无需此文件）
 ls -l ~/.qoder/log-credentials.json && cat ~/.qoder/log-credentials.json
 # 若 logger-error.log 出现 "credentials file unusable" 诊断，按提示修复文件
 ```
 
-判定：本地有行数 + outbox 堆积 + logger-error 有 TLS 报错 → CA 证书问题；本地有行数 + outbox 堆积 + logger-error 有 credentials 诊断 → 凭据文件损坏/缺字段；本地有行数 + outbox 空但 Server 无接收 → 凭据文件缺失（静默仅本地模式，IT 未下发）；本地零行 → hook 未安装/未触发（统一包场景同时确认凭据文件是否已下发）。
+判定：本地有行数 + outbox 堆积 + logger-error 有 TLS 报错 → CA 证书问题；本地有行数 + outbox 堆积 + logger-error 有 credentials 诊断 → 凭据文件损坏/缺字段（仅单机覆盖场景）；本地有行数 + outbox 空但 Server 无接收 → 上报通道未启用（hooks.json 的 `QODER_LOG_SERVER_URL` 为空，统一包场景多为仍在用未内置共享 Key 的旧包）；本地零行 → hook 未安装/未触发。
 
 ---
 
@@ -569,7 +554,7 @@ ls -l ~/.qoder/log-credentials.json && cat ~/.qoder/log-credentials.json
 
 ```bash
 # ── 客户端侧 ──────────────────────────────────────────────
-python3 tools/gen-hooks.py                          # 生成 hooks.json 模板（默认 13 事件；--all-events 出 26 全集）
+python3 tools/gen-hooks.py --server-url https://…/api/logs --api-key qk_…   # 统一分发包（内置共享 Key + Server 地址；默认 13 事件，--all-events 出 26 全集）
 bash tools/verify-collector.sh                      # 本机采集自检
 node tools/audit-report.js --days 7 --strict        # 本地日志审计报告
 

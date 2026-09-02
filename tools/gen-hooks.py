@@ -22,19 +22,19 @@ collector identity, --upload-mode selects off | legacy | cursor (default
 legacy = the historical per-record push), and --ca-certs points
 NODE_EXTRA_CA_CERTS at a private CA bundle. Unset options keep their defaults,
 so a bare run reproduces the shipped configuration byte for byte; the other
-flags are personalisation layers on top of the shipped 13-event scope (or the
+flags are distribution layers on top of the shipped 13-event scope (or the
 26-event superset with --all-events).
 
-Two distribution modes are supported:
+Distribution model (recommended: shared-key fleet package):
 
-- Personalised packages (legacy): pass --api-key/--user-id to bake a
-  per-person identity into every event's env block. One package per person.
-- Fleet-wide package (recommended): pass only --server-url (and --ca-certs)
-  and leave --api-key/--user-id unset. The env block ships empty identity
-  values, and the collector falls back to the per-machine credentials file
+- Pass --server-url and the company-wide shared --api-key to bake both into
+  every event's env block. One identical package for everyone. The key only
+  authenticates the upload endpoint; attribution comes from the enterprise
+  email already carried inside each record, so --user-id stays unset.
+- Optional per-machine override: when the env identity values are empty the
+  collector falls back to the per-machine credentials file
   (~/.qoder/log-credentials.json, override with QODER_LOG_CREDENTIALS_FILE)
-  that IT provisions on every device. One identical package for everyone;
-  personal keys never travel inside the plugin.
+  that IT provisions on that device only (e.g. a temporary per-host key).
 """
 
 import argparse
@@ -194,8 +194,9 @@ def parse_args():
                         help="QODER_LOG_SERVER_URL value (empty disables upload)")
     parser.add_argument("--api-key", default="",
                         help="QODER_LOG_API_KEY value, sent as X-API-Key; "
-                             "leave unset for fleet-wide packages that read "
-                             "the per-machine credentials file instead")
+                             "pass the company-wide shared key for the "
+                             "fleet-wide package (leave unset only for "
+                             "local-only or credentials-file deployments)")
     parser.add_argument("--user-id", default="",
                         help="QODER_LOG_USER_ID member identity override; "
                              "same credentials-file fallback as --api-key")

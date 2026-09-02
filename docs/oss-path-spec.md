@@ -2,8 +2,8 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | v1.0 |
-| 生效日期 | 2026-09-01 |
+| 文档版本 | v1.1 |
+| 生效日期 | 2026-09-01（v1.1 修订 2026-09-02：归因来源改为记录内 `email`，见 §5；路径结构不变） |
 | 契约三方 | ① 日志上报 Server（`server/`）② 审计工具（`tools/oss-audit.js`）③ 员工端采集插件（`plugin/hooks/log-request.js`，经 Server 间接依赖本规范） |
 | 变更约束 | 任何一方不得单方面变更路径结构；破坏性变更须升版为 `v2/`（见 §10） |
 
@@ -17,7 +17,7 @@
 | --- | --- |
 | 确定性归因 | 任意一条记录，仅凭对象键即可回答：**哪天、谁、来自 Qoder 还是 QoderWork** |
 | 免索引查询 | 审计员不需要数据库，仅凭前缀 ListObjects + 单对象下载即可完成常见审计问题 |
-| 防伪造、抗抵赖 | 用户身份来自 Server 端 API Key 注册表，不信任记录自报字段 |
+| 归因口径统一 | 归因以记录内拍平的企业身份 `email` 为准（客户端自报）；共享 API Key 仅做接口鉴权。接受的取舍：内网环境 + Qoder 官方后台用量数据兜底，不防御内网恶意伪造 |
 | 多业务共存 | 共享 Bucket 中与其他业务的日志完全隔离，权限与生命周期可按前缀独立管理 |
 | 成本可控 | gzip 必开 + 生命周期规则挂前缀 + 低基数字段不进路径 |
 
@@ -28,7 +28,7 @@
 ```
 oss://<公司共享日志Bucket>/logs/qoder/v1/
   date=2026-09-01/                        # 分区第 1 级：北京日期 = 记录 timestamp + 8h 取日
-    user=jiahao.li@sigmob.com/            # 分区第 2 级：API Key 注册绑定的公司邮箱（小写 + 白名单清洗 [a-z0-9._@-]）
+    user=jiahao.li@sigmob.com/            # 分区第 2 级：记录内企业身份 email（小写 + 白名单清洗 [a-z0-9._@-]）
       src=qoder/                          # 分区第 3 级：来源二分（qoder | qoderwork）
         part-143005-a7f3-0001.jsonl.gz    # part-<段关闭时刻HHmmss>-<实例ID 4hex>-<序号>
       src=qoderwork/
@@ -81,18 +81,19 @@ timestamp = "2026-09-01T15:59:59.000Z"   →  +8h = 2026-09-01 23:59:59 (+08:00)
 
 ## 5. 分区第 2 级：`user=<公司邮箱>`
 
-**规则**：取 **Server 端 API Key 注册表**（`api-keys.yml`，见 `runbook.md` §4）中该 Key 绑定的 `user_id`（公司邮箱），统一转小写后按白名单 `[a-z0-9._@-]` 清洗（白名单外字符替换为 `_`）。
+**规则**：取记录内拍平的企业身份 `email`（客户端从 payload `extra.user` 拍平，见 §8），统一转小写后按白名单 `[a-z0-9._@-]` 清洗（白名单外字符替换为 `_`）。共享 API Key 仅做接口鉴权、不参与归因（注册表见 `runbook.md` §4）。
 
 **设计依据**：
 
 | 关注点 | 结论 |
 | --- | --- |
-| 为什么不信记录自报 `user` 字段 | 记录内的 `user` 字段由客户端 hook 采集（来自 hook payload / 本地 Git 配置 / OS 账号），员工可改本地 Git 配置伪造；**分区归因必须来自 Server 端注册表**才防伪造、抗抵赖 |
-| Server 盖章字段 | Server 收到记录后附加 `ingest_user`（注册表解析出的归一化邮箱）与 `ingest_time`（Server 接收时刻），**原 `user` 字段保留不动**，供审计交叉校验——两者不一致即触发"身份冒用"核查 |
-| 归因键唯一性 | 一人一 Key 一邮箱；员工换机、换 OS 账号均不影响 `user=` 归因（机器归因看记录内 `hostname`/`client_id`，见 §8 字段表） |
-| 清洗规则 | 邮箱本身即匹配白名单；清洗仅是对异常注册数据的防御（例如误录入中文备注、空格），保证对象键永远合法 |
+| 为什么用记录内 `email` | 插件统一强制安装、无法按人分发不同 Key，注册表归因不可行；改为共享 Key 鉴权 + 记录内 `email` 归因后，换机、轮转 Key 均不影响归因连续性 |
+| 自报语义 | `email` 为客户端自报（企业身份，采集端已保证存量记录几乎必含，见 §8 归因门控）；内网环境接受伪造风险，真实用量以 Qoder 官方后台数据兜底 |
+| Server 盖章字段 | Server 收到记录后附加 `ingest_user`（记录内 `email` 原文，无则空串）与 `ingest_time`（Server 接收时刻）；`ingest_user` 与 `user=` 分区同源，审计报表可直接引用 |
+| 缺失兜底 | 记录无 `email` 时 `ingest_user` 为空串，分区归 `user=unknown` |
+| 清洗规则 | 邮箱本身即匹配白名单；清洗仅是对异常数据的防御（例如误录入中文备注、空格），保证对象键永远合法 |
 
-> 交叉校验示例：记录 `user=li15733056635@163.com`（个人邮箱，本地 Git 配置残留）而 Key 注册 `user=jiahao.li@sigmob.com`，则对象键 `user=jiahao.li@sigmob.com`，`ingest_user=jiahao.li@sigmob.com` 与原字段并存，审计报表可同时呈现两者。
+> v1.0 → v1.1 变更：`user=` 取值来源由“API Key 注册表 `user_id`”改为“记录内 `email`”。分区结构、值域（公司邮箱）、清洗规则均不变，审计工具与既有查询配方无需改动。
 
 ---
 
@@ -176,7 +177,7 @@ for f in part-*.jsonl.gz; do gunzip -c "$f"; done > requests_2026-09-01.jsonl
 | `org_id` | string | 组织 ID（可选，缺失不出现） | `"019cbcf2-…"` |
 | `org_name` | string | 组织名（可选，缺失不出现） | `"sigmob"` |
 | `uid` | string | 企业成员 ID（可选，缺失不出现） | `"019efd72-…"` |
-| `ingest_user` | string | Server 盖章：注册表归一化邮箱（归因依据） | `"jiahao.li@sigmob.com"` |
+| `ingest_user` | string | Server 盖章：记录内 `email` 原文（归因依据，无 email 时为空串） | `"jiahao.li@sigmob.com"` |
 | `ingest_time` | string | Server 盖章：接收时刻（UTC ISO8601） | `"2026-09-01T02:09:13.021Z"` |
 | `timestamp` | string | 事件时刻（UTC ISO8601，分区依据） | `"2026-09-01T02:09:12.883Z"` |
 | `timestamp_ms` | number | 事件时刻（毫秒） | `1788228552883` |
@@ -207,7 +208,7 @@ for f in part-*.jsonl.gz; do gunzip -c "$f"; done > requests_2026-09-01.jsonl
 | 某天全员记录 | `node tools/oss-audit.js fetch --date 2026-09-01` | `date=` 前缀下递归 ListObjects（对象数见 §11 容量预估） |
 | 某天全公司 Credits 汇总 | `node tools/oss-audit.js manifest --date 2026-09-01` | **只读 `_manifest/date=2026-09-01.json.gz` 单对象**，per-user credits 已预聚合，无需扫全天数据 |
 | 按工具类型过滤 | 先 fetch 再 jq（§9.2 配方 2） | `type`/`tool_name` 是低基数字段，下载后过滤 |
-| 谁没上报（coverage） | `node tools/oss-audit.js coverage --date 2026-09-01` | `_manifest` per-user 清单与花名册/Key 注册表求差集 |
+| 谁没上报（coverage） | `node tools/oss-audit.js coverage --date 2026-09-01` | 列出实际出现的 `user=` 分区；差集比对可把仅含 `user_id` 的花名册 YAML 传给 `--registry`（结构同 api-keys.yml；共享 Key 部署下注册表本身不再是花名册） |
 | 本地已有日志直接分析 | `node tools/oss-audit.js fetch --from-local --date 2026-09-01`（或直接用 `tools/audit-report.js`，见 §9.3） | 复用本地 `$QODER_LOG_DIR/requests_<D>.jsonl`，跳过下载 |
 
 > 注：`fetch` 默认只下载、解压、合并出 `requests_<D>.jsonl`；**不带 `--report` 不会自动出报告**——需要 Markdown 报告时必须显式加 `--report`（如表中前两行）。
@@ -309,7 +310,7 @@ node tools/oss-reconcile.js --day 2026-09-01 \
 
 | 规则 | 内容 |
 | --- | --- |
-| 何时升版 | 分区结构、归因语义、文件名格式任一破坏性变更（例如增加第 4 级分区、更换归因键） |
+| 何时升版 | 分区结构、归因键值域/清洗规则、文件名格式任一破坏性变更（例如增加第 4 级分区）；仅归因取值来源变化（如 v1.1 由注册表改为记录内 `email`）且值域与清洗规则不变时**不升版**，审计工具无需区分处理 |
 | 并行期 | `v1/` 与 `v2/` 并存，各自完整独立；生命周期规则按版本前缀分别挂载 |
 | 写入路由 | Server 一次只写一个版本（配置项 `oss.prefix` 控制），不跨版本混写 |
 | 读取路由 | 审计工具按对象键中的 `v1`/`v2` 自动选择解析规则 |
