@@ -24,6 +24,17 @@ NODE_EXTRA_CA_CERTS at a private CA bundle. Unset options keep their defaults,
 so a bare run reproduces the shipped configuration byte for byte; the other
 flags are personalisation layers on top of the shipped 13-event scope (or the
 26-event superset with --all-events).
+
+Two distribution modes are supported:
+
+- Personalised packages (legacy): pass --api-key/--user-id to bake a
+  per-person identity into every event's env block. One package per person.
+- Fleet-wide package (recommended): pass only --server-url (and --ca-certs)
+  and leave --api-key/--user-id unset. The env block ships empty identity
+  values, and the collector falls back to the per-machine credentials file
+  (~/.qoder/log-credentials.json, override with QODER_LOG_CREDENTIALS_FILE)
+  that IT provisions on every device. One identical package for everyone;
+  personal keys never travel inside the plugin.
 """
 
 import argparse
@@ -182,9 +193,12 @@ def parse_args():
     parser.add_argument("--server-url", default="",
                         help="QODER_LOG_SERVER_URL value (empty disables upload)")
     parser.add_argument("--api-key", default="",
-                        help="QODER_LOG_API_KEY value, sent as X-API-Key")
+                        help="QODER_LOG_API_KEY value, sent as X-API-Key; "
+                             "leave unset for fleet-wide packages that read "
+                             "the per-machine credentials file instead")
     parser.add_argument("--user-id", default="",
-                        help="QODER_LOG_USER_ID member identity override")
+                        help="QODER_LOG_USER_ID member identity override; "
+                             "same credentials-file fallback as --api-key")
     parser.add_argument("--ca-certs", default="",
                         help="NODE_EXTRA_CA_CERTS path to a private CA bundle")
     parser.add_argument("--upload-mode", default="legacy", choices=["off", "legacy", "cursor"],

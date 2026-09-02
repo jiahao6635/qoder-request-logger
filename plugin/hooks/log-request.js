@@ -36,8 +36,17 @@
  *
  * Configuration (environment, normally set in hooks/hooks.json):
  *   QODER_LOG_SERVER_URL         Receiver base or full URL. Empty disables push.
- *   QODER_LOG_API_KEY            Sent as the X-API-Key header.
- *   QODER_LOG_USER_ID            Member identity override.
+ *   QODER_LOG_API_KEY            Sent as the X-API-Key header. When empty,
+ *                                falls back to the per-machine credentials file
+ *                                (see QODER_LOG_CREDENTIALS_FILE).
+ *   QODER_LOG_USER_ID            Member identity override; same credentials-file
+ *                                fallback as the API key.
+ *   QODER_LOG_CREDENTIALS_FILE   Per-machine credentials file read when the API
+ *                                key / user id env values are empty. Default:
+ *                                ~/.qoder/log-credentials.json, format
+ *                                {"api_key":"qk_...","user_id":"first.last@..."},
+ *                                provisioned by IT so one fleet-wide plugin
+ *                                package can carry per-person credentials.
  *   QODER_LOG_DIR                Log directory. Default: ~/.qoder/logs
  *   QODER_LOG_TRUNCATE           Per-field character cap. Default: 20000
  *   QODER_LOG_MAX_FILE_MB        Rotate the daily file above this size. Default: 64
@@ -71,10 +80,69 @@ const LOGGER_VERSION = "1.1.0";
 const ENV = process.env;
 const SELF_TEST = process.argv[2] === "--self-test";
 
+// Per-machine credentials file for fleet-wide plugin distributions. IT ships
+// one identical plugin package to everyone and provisions this file per
+// machine, so personal keys never travel inside the plugin itself.
+const CREDENTIALS_FILE = ENV.QODER_LOG_CREDENTIALS_FILE
+  || path.join(os.homedir(), ".qoder", "log-credentials.json");
+
+// Set when the credentials file exists but is unusable; surfaced once through
+// the error log by the next handled event. Never carries file contents, so no
+// key material can leak into diagnostics.
+let credentialIssue = null;
+
+/**
+ * Identity resolution: environment values (personalised hooks.json) win;
+ * empty values fall back to the credentials file. Each call re-evaluates and
+ * resets {@code credentialIssue}. A missing file is the expected
+ * not-yet-provisioned state (silent, local-only mode); a file that exists but
+ * is incomplete or malformed records an issue for diagnostics.
+ */
+function resolveIdentity(envApiKey, envUserId, credentialsFile) {
+  credentialIssue = null;
+  const envKey = typeof envApiKey === "string" ? envApiKey.trim() : "";
+  const envUser = typeof envUserId === "string" ? envUserId.trim() : "";
+  let fileKey = "";
+  let fileUser = "";
+  let fileExists = false;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(credentialsFile, "utf8"));
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      // SyntaxError messages echo file fragments, so classify instead of
+      // forwarding err.message - diagnostics must never carry key material.
+      credentialIssue = err instanceof SyntaxError ? "malformed JSON"
+        : "unreadable: " + (err.code || err.message);
+    }
+    // ENOENT: not provisioned yet - the silent local-only default.
+  }
+  if (parsed !== null) {
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      fileExists = true;
+      if (typeof parsed.api_key === "string") fileKey = parsed.api_key.trim();
+      if (typeof parsed.user_id === "string") fileUser = parsed.user_id.trim();
+    } else {
+      credentialIssue = "not a JSON object";
+    }
+  }
+  if (!credentialIssue && fileExists) {
+    const keyOk = envKey || fileKey;
+    const userOk = envUser || fileUser;
+    if (!keyOk || !userOk) {
+      credentialIssue = "missing " + (!keyOk ? "api_key" : "user_id");
+    }
+  }
+  return { apiKey: envKey || fileKey, userId: envUser || fileUser };
+}
+
+const IDENTITY = resolveIdentity(ENV.QODER_LOG_API_KEY, ENV.QODER_LOG_USER_ID, CREDENTIALS_FILE);
+
 const CONFIG = {
   serverUrl: ENV.QODER_LOG_SERVER_URL || "",
-  apiKey: ENV.QODER_LOG_API_KEY || "",
-  userId: ENV.QODER_LOG_USER_ID || "",
+  apiKey: IDENTITY.apiKey,
+  userId: IDENTITY.userId,
+  credentialsFile: CREDENTIALS_FILE,
   logDir: ENV.QODER_LOG_DIR || path.join(os.homedir(), ".qoder", "logs"),
   truncate: intOpt(ENV.QODER_LOG_TRUNCATE, 20000),
   maxFileBytes: intOpt(ENV.QODER_LOG_MAX_FILE_MB, 64) * 1024 * 1024,
@@ -193,6 +261,14 @@ function finish() {
 // ─── Event handling ─────────────────────────────────────────────────────────
 
 function handleEvent(raw) {
+  // Surface a credentials-file problem before anything else, once per process
+  // (hook runs are one-shot). Path only - never the file contents.
+  if (credentialIssue) {
+    const issue = credentialIssue;
+    credentialIssue = null;
+    reportError(new Error("credentials file unusable: " + issue + " (" + CONFIG.credentialsFile + ")"),
+      { stage: "credentials" });
+  }
   if (!raw || !raw.trim()) return;
 
   let input;
@@ -1786,6 +1862,51 @@ function runSelfTest() {
       return !!rec && rec.uid === "[redacted jwt]" && !("user_info" in rec)
         && !!cached && !!cached.user_info && cached.user_info.uid === "[redacted jwt]";
     })()],
+    // Credentials-file fallback for fleet-wide distributions: a valid file
+    // supplies identity when env is empty, env wins over the file, a missing
+    // file is the silent local-only default, and unusable files flag an issue
+    // without echoing key material. Pure-function checks: CONFIG itself was
+    // already resolved at module load against the real per-machine file.
+    ...(function () {
+      const credDir = fs.mkdtempSync(path.join(os.tmpdir(), "qoder-cred-"));
+      const credFile = path.join(credDir, "log-credentials.json");
+      fs.writeFileSync(credFile, JSON.stringify({ api_key: "qk_file_key", user_id: "file@sigmob.com" }));
+      const results = [
+        ["credentials: file supplies identity when env empty", (function () {
+          const r = resolveIdentity("", "", credFile);
+          return r.apiKey === "qk_file_key" && r.userId === "file@sigmob.com";
+        })()],
+        ["credentials: env overrides file", (function () {
+          const r = resolveIdentity("qk_env_key", "env@sigmob.com", credFile);
+          return r.apiKey === "qk_env_key" && r.userId === "env@sigmob.com";
+        })()],
+        ["credentials: mixed env/file identity merges", (function () {
+          const r = resolveIdentity("qk_env_key", "", credFile);
+          return r.apiKey === "qk_env_key" && r.userId === "file@sigmob.com";
+        })()],
+        ["credentials: missing file is silent local-only", (function () {
+          const r = resolveIdentity("", "", path.join(credDir, "absent.json"));
+          return r.apiKey === "" && r.userId === "" && credentialIssue === null;
+        })()],
+        ["credentials: broken file flagged without echoing contents", (function () {
+          fs.writeFileSync(credFile, "{not json");
+          const r = resolveIdentity("", "", credFile);
+          return r.apiKey === "" && r.userId === "" && credentialIssue === "malformed JSON";
+        })()],
+        ["credentials: incomplete file flagged", (function () {
+          fs.writeFileSync(credFile, JSON.stringify({ api_key: "qk_only" }));
+          const r = resolveIdentity("", "", credFile);
+          return r.apiKey === "qk_only" && r.userId === "" && credentialIssue === "missing user_id";
+        })()],
+        ["credentials: env fills an incomplete file without issue", (function () {
+          const r = resolveIdentity("qk_env_key", "env@sigmob.com", credFile);
+          return r.apiKey === "qk_env_key" && r.userId === "env@sigmob.com" && credentialIssue === null;
+        })()],
+      ];
+      credentialIssue = null;
+      try { fs.rmSync(credDir, { recursive: true, force: true }); } catch (err) { /* best effort */ }
+      return results;
+    })(),
   ];
 
   const failures = checks.filter((entry) => !entry[1]);

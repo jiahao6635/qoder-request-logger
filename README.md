@@ -65,14 +65,16 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--oss.mode=file"
 
 - **仅本地模式**：`QODER_LOG_SERVER_URL` 留空时只写本地 JSON Lines 日志（按天分割），不上报。
 - **上报模式**：`QODER_LOG_UPLOAD_MODE=legacy`（逐条 push + outbox 重试，默认）或 `cursor`（offset 跟踪 gzip 批量上传）。
+- **统一分发模式（推荐）**：`QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 留空时回退读取本机凭据文件 `~/.qoder/log-credentials.json`（`QODER_LOG_CREDENTIALS_FILE` 可覆盖路径），个人凭据由 IT 按机器下发、不进插件包，全公司一个插件包（见 runbook §4.6）。
 
 关键环境变量（配置于 `plugin/hooks/hooks.json` 各事件的 `env` 块）：
 
 | 变量 | 说明 |
 | --- | --- |
 | `QODER_LOG_SERVER_URL` | Server 地址；留空 = 仅本地日志 |
-| `QODER_LOG_API_KEY` | 员工专属 API Key（`qk_` 前缀） |
-| `QODER_LOG_USER_ID` | 用户标识（公司邮箱，身份以 Server 端 Key 注册表为准） |
+| `QODER_LOG_API_KEY` | 员工专属 API Key（`qk_` 前缀）；留空时回退读取凭据文件 |
+| `QODER_LOG_USER_ID` | 用户标识（公司邮箱，身份以 Server 端 Key 注册表为准）；留空时同上回退 |
+| `QODER_LOG_CREDENTIALS_FILE` | 本机凭据文件路径（默认 `~/.qoder/log-credentials.json`，格式 `{api_key, user_id}`，IT 按机器下发） |
 | `QODER_LOG_UPLOAD_MODE` | `legacy` \| `cursor` |
 | `QODER_LOG_UPLOAD_INTERVAL_SEC` | 上报间隔（秒） |
 | `QODER_LOG_REDACT` | `1` 开启凭据脱敏 |
