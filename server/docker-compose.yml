@@ -1,0 +1,74 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Qoder 审计日志收集 Server —— 一键 Docker 部署（推荐路径，见 docs/runbook.md §3.6）
+#
+# ▍3 步上线：
+#   1) cp .env.example .env && vi .env          # 填 OSS_BUCKET/OSS_ENDPOINT/OSS_AK_ID/OSS_AK_SECRET 等
+#   2) mkdir -p config && vi config/api-keys.yml # 放置 Key 注册表（格式见 src/main/resources/api-keys.example.yml，
+#                                                  # 生成命令见 runbook §4.1；热加载每 5 分钟，无需重启）
+#   3) docker compose up -d --build              # 构建 + 启动（healthcheck 自动就绪判定）
+#
+# ▍验证：curl -s http://127.0.0.1:8080/api/health   # storage_mode 必须为 "oss"
+# ▍升级：git pull && docker compose up -d --build   # 滚动替换（优雅停机 ≤120s 泄洪后重启）
+# ▍配置键与 application.yml 的映射遵循 Spring 环境变量覆盖规则
+#   （audit.close-idle-seconds → AUDIT_CLOSE_IDLE_SECONDS 等），全部键名以
+#    ServerProperties.java / application.yml 为准
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  qoder-log-server:
+    image: sigmob/qoder-log-server:1.0.0
+    build: .
+    container_name: qoder-log-server
+    restart: unless-stopped
+
+    ports:
+      - "${SERVER_PORT:-8080}:8080"        # 宿主端口可经 .env 的 SERVER_PORT 覆盖
+
+    environment:
+      TZ: Asia/Shanghai                    # 北京时间：日志时间戳与运维观察一致（manifest cron 时区由代码硬编码保证）
+
+      # ── JVM ──────────────────────────────────────────────────────────────
+      JAVA_OPTS: "${JAVA_OPTS:--XX:+UseG1GC -Xms1g -Xmx3g}"
+
+      # ── OSS 基座（必填项缺失时 compose 直接拒绝启动，错误信息见 :? 后文案）──
+      OSS_MODE: "${OSS_MODE:-oss}"                       # oss=生产直传 | file=本地联调（写 OSS_FILE_STORAGE_DIR）
+      OSS_BUCKET: "${OSS_BUCKET:?请在 .env 中填写 OSS_BUCKET（公司共享日志 Bucket 名，见 runbook §1）}"
+      OSS_ENDPOINT: "${OSS_ENDPOINT:?请在 .env 中填写 OSS_ENDPOINT（与 Bucket 同地域，优先内网 Endpoint）}"
+      OSS_PREFIX: "${OSS_PREFIX:-logs/qoder/v1}"         # 对象 key 前缀（三方契约，勿带尾斜杠、勿改）
+      OSS_ENCRYPTION: "${OSS_ENCRYPTION:-kms}"           # 生产推荐 kms；kms 时 OSS_KMS_KEY_ID 必填（应用启动校验）
+      OSS_KMS_KEY_ID: "${OSS_KMS_KEY_ID:-}"              # 专属 CMK key-id
+      OSS_AK_ID: "${OSS_AK_ID:?请在 .env 中填写 OSS_AK_ID（§1.2 qoder-log-writer 子账号 AK）}"
+      OSS_AK_SECRET: "${OSS_AK_SECRET:?请在 .env 中填写 OSS_AK_SECRET（§1.2 writer 子账号 SK）}"
+      OSS_FILE_STORAGE_DIR: "${OSS_FILE_STORAGE_DIR:-/data/oss-storage}"  # 仅 file 联调模式使用
+
+      # ── audit.* 运行参数（默认值=生产推荐，均可经 .env 覆盖；语义见 application.yml 行内注释）──
+      AUDIT_API_KEYS_FILE: "${AUDIT_API_KEYS_FILE:-/etc/qoder-log-server/api-keys.yml}"
+      AUDIT_SPOOL_DIR: "${AUDIT_SPOOL_DIR:-/data/spool/qoder}"
+      AUDIT_ROTATE_SIZE_MB: "${AUDIT_ROTATE_SIZE_MB:-64}"
+      AUDIT_CLOSE_IDLE_SECONDS: "${AUDIT_CLOSE_IDLE_SECONDS:-600}"
+      AUDIT_UPLOAD_INTERVAL_SECONDS: "${AUDIT_UPLOAD_INTERVAL_SECONDS:-30}"
+      AUDIT_RATE_LIMIT_PER_KEY: "${AUDIT_RATE_LIMIT_PER_KEY:-30}"
+      AUDIT_MAX_BODY_MB: "${AUDIT_MAX_BODY_MB:-8}"
+      AUDIT_DISK_HIGH_WATERMARK: "${AUDIT_DISK_HIGH_WATERMARK:-0.9}"
+
+    volumes:
+      - qoder-spool:/data/spool                                   # spool 数据卷（OSS 断连时 100GB 级缓冲，重启续传）
+      - ./config/api-keys.yml:/etc/qoder-log-server/api-keys.yml:ro  # Key 注册表（只读；热加载 5 分钟）
+
+    healthcheck:                   # 与 Dockerfile 内置 HEALTHCHECK 保持一致
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+    stop_grace_period: 120s        # 匹配应用优雅停机预算：SIGTERM 后最长 120s 泄洪上传
+    logging:                       # 防止日志无限增长吃满磁盘
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  qoder-spool:
+    name: qoder-spool              # 固定卷名，便于备份/巡检时定位（docker volume inspect qoder-spool）

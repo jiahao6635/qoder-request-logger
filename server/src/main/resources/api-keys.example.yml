@@ -1,0 +1,19 @@
+# Example API key registry. Copy to api-keys.yml and fill in real entries.
+#
+# The server never stores raw keys: each `key_sha256` is the hex SHA-256 of the
+# full key string (including the `qk_` prefix). Generate one with:
+#
+#   KEY="qk_$(openssl rand -hex 16)"
+#   echo "key:     $KEY"
+#   echo "sha256:  $(printf %s "$KEY" | shasum -a 256 | cut -d' ' -f1)"
+#
+# Hot reload: the file is re-parsed when its mtime changes (checked every 5 min).
+keys:
+  - user_id: jiahao.li@sigmob.com
+    key_sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    display_name: 李嘉豪
+    enabled: true
+  - user_id: felix.zhang@sigmob.com
+    key_sha256: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+    display_name: Felix
+    enabled: false   # disabled keys are rejected with 401

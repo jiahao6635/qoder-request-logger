@@ -1,0 +1,343 @@
+{
+  "description": "Qoder request logger (internal-audit scope) - 13 events covering session lifecycle, user prompts, agent final output, tool calls and permission decisions. Transcript harvesting (Credits / tokens) enabled; credential redaction on. HTTP upload off while QODER_LOG_SERVER_URL is empty; QODER_LOG_UPLOAD_MODE=legacy keeps the per-record push with outbox retry, cursor switches to offset-tracked gzip batch upload.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-sessionstart",
+            "timeout": 15,
+            "async": true,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-sessionend",
+            "timeout": 25,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-userpromptsubmit",
+            "timeout": 15,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-stop",
+            "timeout": 30,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-pretooluse",
+            "timeout": 15,
+            "async": true,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-posttooluse",
+            "timeout": 25,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-posttoolusefailure",
+            "timeout": 25,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-permissionrequest",
+            "timeout": 15,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-permissiondenied",
+            "timeout": 15,
+            "async": true,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-subagentstart",
+            "timeout": 15,
+            "async": true,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-subagentstop",
+            "timeout": 30,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-taskcreated",
+            "timeout": 15,
+            "async": true,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QODER_PLUGIN_ROOT}\"/hooks/logger.sh",
+            "name": "request-logger-taskcompleted",
+            "timeout": 25,
+            "async": false,
+            "env": {
+              "QODER_LOG_SERVER_URL": "",
+              "QODER_LOG_API_KEY": "",
+              "QODER_LOG_USER_ID": "",
+              "QODER_LOG_REDACT": "1",
+              "QODER_LOG_INCLUDE_TRANSCRIPT": "1",
+              "QODER_LOG_RAW": "0",
+              "QODER_LOG_UPLOAD_MODE": "legacy",
+              "QODER_LOG_UPLOAD_INTERVAL_SEC": "60",
+              "QODER_LOG_LOCAL_RETENTION_DAYS": "0",
+              "NODE_EXTRA_CA_CERTS": ""
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Qoder 审计日志收集 Server 配置（注释即文档，所有默认值列在行内）
+# ─────────────────────────────────────────────────────────────────────────────
+server:
+  port: 8080                     # HTTP 端口，默认 8080
+  shutdown: graceful             # 优雅停机：等待处理中的请求完成
+
+spring:
+  application:
+    name: qoder-log-server
+  lifecycle:
+    timeout-per-shutdown-phase: 130s   # 略大于停机上传预算 120s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics        # 暴露 /actuator/health 与 /actuator/metrics
+  endpoint:
+    health:
+      show-details: always             # 健康详情始终可见（内网服务）
+
+audit:
+  api-keys-file: ./api-keys.yml        # Key 文件路径（结构见 api-keys.example.yml）
+  spool-dir: ./spool                   # 本地落盘目录（{spool}/date=/user=/src=/current.ndjson）
+  max-body-mb: 8                       # batch 解压后 body 上限，超出返回 413
+  rate-limit-per-key: 30               # 单 Key 固定窗口限流（req/s），超限 429 + Retry-After
+  rotate-size-mb: 64                   # 段滚动大小阈值
+  close-idle-seconds: 600              # 段静默滚动阈值（测试可调 1~2s 加速）
+  upload-interval-seconds: 30          # 上传调度周期（测试可调 1~2s 加速）
+  disk:
+    high-watermark: 0.9                # spool 所在磁盘用量 ≥90% 时 ingest 返回 503；≥80% 打 WARN
+  dedup:
+    max-keys: 100000                   # Caffeine maximumSize
+    ttl-hours: 24                      # Caffeine expireAfterWrite
+
+oss:
+  mode: file                           # oss | file；file 模式写本地目录用于全链路测试
+  endpoint: https://oss-cn-beijing.aliyuncs.com   # Aliyun OSS endpoint
+  bucket: sigmob-qoder-logs            # bucket 名
+  prefix: logs/qoder/v1                # 对象 key 前缀
+  encryption: none                     # none | aes256 | kms（kms 需配 kms-key-id）
+  kms-key-id: ""                       # SSE-KMS 的 CMK id，encryption=kms 时必填
+  file-storage-dir: ./oss-storage      # file 模式的存储根目录
+
+logging:
+  level:
+    com.sigmob.qoder.logserver: INFO

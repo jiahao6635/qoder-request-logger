@@ -1,0 +1,20 @@
+# Build artifacts
+server/target/
+# 插件分发压缩包 —— 构建产物，不入库
+qoder-request-logger-1.1.0.zip
+# Docker 部署凭证与密钥注册表 —— 绝不入库
+server/.env
+server/config/
+
+# Session scratch files (e.g. .tmp-interval0-test.sh at the repo root)
+.tmp-*
+.tmp-audit/
+
+# OS noise
+.DS_Store
+
+# Local collected audit logs (sample data, not source of truth)
+received-logs/
+
+# Runtime logs
+*.log
