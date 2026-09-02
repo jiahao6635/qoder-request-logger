@@ -5,6 +5,7 @@ qoder-request-logger-1.1.0.zip
 # Docker 部署凭证与密钥注册表 —— 绝不入库
 server/.env
 server/config/
+server/api-keys.yml
 
 # Session scratch files (e.g. .tmp-interval0-test.sh at the repo root)
 .tmp-*
