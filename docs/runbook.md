@@ -129,6 +129,7 @@ ossutil rm oss://<bucket>/logs/qoder/v1/_manifest/probe.txt
 | 8 | legacy→cursor 切换后旧 outbox.ndjson 成为孤儿 | cursor 模式只从日文件游标上传，不读旧 outbox | **无数据丢失**：outbox 里的记录同时也是本地日文件内容，会被 cursor 补传，服务端去重；确认切换稳定后可手动清理 `~/.qoder/logs/.request-logger/outbox.ndjson` |
 | 9 | cursor 模式单行超 2MB 时该文件游标停滞 | 单个 batch 上限 2MB（`batchMaxBytes`）；某行完整内容超过该上限时，游标停在该行开头且无法跨行推进，该文件此后不再上传 | 记录行超限极罕见（需单条原始事件超 2MB），属已知边界；数据仍在本地日文件不丢失，需要时可用 `oss-audit.js fetch --from-local` 类本地手段审计 |
 | 10 | **无企业身份的记录不采集** | 采集端归因门控：拿不到企业身份（payload `extra.user`，含会话缓存回填）的记录直接丢弃，不落盘、不上传；jq 兜底采集器同样只保存携带 `extra.user` 的事件 | 不提供 `extra.user` 的入口（如部分 CLI 会话）将**没有任何采集记录**，属预期行为；排查“某人记录缺失”时先确认其客户端事件是否携带 `extra.user` |
+| 11 | **凭据文件缺失 = 仅本地模式** | 统一分发包中 `QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 留空，采集器回退读取每台机器的本机凭据文件（默认 `~/.qoder/log-credentials.json`）；文件缺失属预期状态（未配置，静默仅本地），文件存在但损坏/缺字段时写一条 `credentials` 诊断到 `logger-error.log`（只报原因与路径，不回显内容） | 新机器未下发凭据文件时表现为“本地有日志、Server 无接收”，coverage 报告会识别为未上报；排查先查凭据文件是否存在且格式正确（§4.6） |
 
 ---
 
@@ -265,11 +266,22 @@ curl -s http://127.0.0.1:8080/actuator/health   # {"status":"UP"}
 
 | 组件 | 版本/要求 | 说明 |
 | --- | --- | --- |
-| Docker Engine | 24+（含 BuildKit） | 按[官方文档](https://docs.docker.com/engine/install/)一句话安装：`curl -fsSL https://get.docker.com | sh`（内网服务器可用离线包/镜像源同步） |
+| Docker Engine | 24+（含 BuildKit） | 按[官方文档](https://docs.docker.com/engine/install/)一句话安装：`curl -fsSL https://get.docker.com | sh -s -- --mirror Aliyun`（国内/阿里云 ECS 务必加 `--mirror Aliyun`，走阿里云 docker-ce 源；内网服务器可用离线包/镜像源同步） |
+| 镜像加速器（国内必配） | daemon 级 `/etc/docker/daemon.json` | 基础镜像 `maven:3.9-*`/`eclipse-temurin:21-jre` 来自 Docker Hub，无加速器时拉取慢或超时（配置见下方代码块）；Dockerfile 内 Maven 依赖与 apt 包源已内置阿里云镜像，无需额外配置 |
 | Compose 插件 | v2+ | 随 Docker Engine 一并安装（`docker compose version` 验证） |
 | 磁盘 | ≥100GB 留给 spool 数据卷 | 对应裸机路径的专用 spool 盘；Docker 数据根目录（`/var/lib/docker`）所在盘需有此余量 |
 
 宿主机**无需** JDK/Maven（构建在 `maven:3.9-eclipse-temurin-21` 构建容器内完成）。
+
+镜像加速器（阿里云北京等国内 ECS 必配）——登录阿里云控制台 → 容器镜像服务 → 镜像加速器，复制专属地址后：
+
+```bash
+sudo tee /etc/docker/daemon.json <<'EOF'
+{ "registry-mirrors": ["https://<你的专属ID>.mirror.aliyuncs.com"] }
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart docker
+docker info | grep -A2 'Registry Mirrors'   # 验证已生效
+```
 
 #### 3.6.2 一键 3 步
 
@@ -283,7 +295,7 @@ chmod 600 .env                       # 含凭证，权限收紧、不入 Git
 # 2) Key 注册表：放置 api-keys.yml（格式见 §4.2，生成见 §4.1；热加载 5 分钟无需重启）
 mkdir -p config && vi config/api-keys.yml
 
-# 3) 构建并启动（首次拉取基础镜像约 1~2 分钟，构建约 2~5 分钟）
+# 3) 构建并启动（Maven/apt 已内置阿里云源；基础镜像走 daemon 加速器，首次拉取约 1~2 分钟，构建约 2~5 分钟）
 docker compose up -d --build
 ```
 
@@ -388,7 +400,7 @@ keys:
 | --- | --- | --- |
 | 1 | 编辑 `api-keys.yml`，将该条目 `enabled: false` | ≤5 分钟后该 Key 全部上报被拒（401）。客户端收到 401/403 后会自动熔断 24h（不再重放，401 期间的记录仅存本地日文件，不进 outbox；见 §2 已知限制） |
 | 2 | 疑似泄露时另见 §6 的"单 Key QPS 异常"告警联动 | 从 OSS 访问日志与 Server 指标回溯泄露期间写入 |
-| 3 | 通知 IT 从该员工 `hooks.json` 移除 `QODER_LOG_API_KEY`（若机器仍在用） | 防止客户端对失效 Key 长期重试 |
+| 3 | 通知 IT 清除该机器凭据文件中的 Key（统一包模式：删除 `~/.qoder/log-credentials.json` 或置空 `api_key`；个性化包模式：移除 `hooks.json` 中的 `QODER_LOG_API_KEY`） | 防止客户端对失效 Key 长期重试；清除后客户端回落到仅本地模式 |
 | 4 | 历史数据不动 | 吊销只影响增量；该用户历史分区照常可审计 |
 
 ### 4.5 换发流程（Key 疑似泄露/周期轮转）
@@ -397,9 +409,31 @@ keys:
 | --- | --- |
 | 1 | 按 §4.1 生成新明文 Key + 哈希 |
 | 2 | `api-keys.yml` 中该 `user_id` 条目：`key_sha256` 换为新哈希（**新旧 Key 短暂并存方案**：临时加一条同 `user_id` 新 Key 条目，老条目延迟 1~2 个工作日置 `enabled: false`，覆盖员工未及时更新配置的窗口） |
-| 3 | 安全渠道向员工分发新 Key，员工更新 `hooks.json` 的 `QODER_LOG_API_KEY` |
+| 3 | 安全渠道向员工分发新 Key，由 IT 更新该机器凭据文件 `~/.qoder/log-credentials.json` 的 `api_key`（个性化包模式则更新 `hooks.json` 的 `QODER_LOG_API_KEY`；凭据文件每次 hook 调用时热读，无需重启） |
 | 4 | 确认新 Key 上报正常（Server 指标 `records_received_total` 恢复增长）后，老条目 `enabled: false` |
 | 5 | 归因连续性：`user_id` 不变 → OSS `user=` 分区不变，新旧 Key 数据自然落在同一前缀下 |
+
+### 4.6 客户端凭据文件（统一分发包的身份落点）
+
+插件统一分发包中 `QODER_LOG_API_KEY` / `QODER_LOG_USER_ID` 留空（由 `gen-hooks.py` 不传 `--api-key/--user-id` 生成），采集器在两者为空时回退读取**每台机器的本机凭据文件**：
+
+```json
+// ~/.qoder/log-credentials.json（权限 600，属主为使用者本人）
+{
+  "api_key": "qk_1f2e3d4c5b6a7988071625344352abba",
+  "user_id": "jiahao.li@sigmob.com"
+}
+```
+
+| 规则 | 说明 |
+| --- | --- |
+| 优先级 | 环境变量非空时优先（个性化包场景向后兼容）；仅 env 提供其一、文件提供另一字段时自动合并 |
+| 自定义路径 | 环境变量 `QODER_LOG_CREDENTIALS_FILE` 覆盖默认路径（写进 `hooks.json` env 块即可，全公司统一） |
+| 文件缺失 | 静默仅本地模式（不上报，无错误日志），属新机器未配置的预期状态 |
+| 文件损坏 | 每次事件写一条 `credentials` 诊断到 `logger-error.log`，只含原因与路径，**不回显文件内容** |
+| IT 下发（macOS 示例） | `install -m 600 /dev/null ~/.qoder/log-credentials.json && printf '{"api_key":"qk_…","user_id":"…@sigmob.com"}' > ~/.qoder/log-credentials.json`（经 MDM/登录脚本执行，凭据不进插件包、不进 Git） |
+
+> 明文 Key 在凭据文件中**明文存放**（采集器发请求时需要原文），与 §4.1 的设计一致：明文只存在于员工本机与分发瞬间，Server 侧永远只有哈希。文件权限 600 + 属主校验由下发脚本保证。
 
 ---
 
@@ -414,7 +448,10 @@ keys:
 #    加 --all-events 才是 26 事件全集）
 python3 tools/gen-hooks.py        # 输出: wrote plugin/hooks/hooks.json (13 events)
 
-# 2) 为每人注入个性化三元组（发布脚本批量做）：
+# 2) 统一分发包（推荐）：只注入公司级配置，个人凭据不进插件包：
+#    python3 tools/gen-hooks.py --server-url https://qoder-log.internal.sigmob.com/api/logs
+#    个人 Key / user_id 由 IT 按机器下发凭据文件（格式与下发命令见 §4.6）。
+#  个性化包（遗留模式）：也可为每人生成个性化包（env 优先级高于凭据文件）：
 #    QODER_LOG_SERVER_URL = https://qoder-log.internal.sigmob.com/api/logs
 #    QODER_LOG_API_KEY   = qk_<该员工的Key>
 #    QODER_LOG_USER_ID   = <该员工公司邮箱>
@@ -518,9 +555,13 @@ wc -l ~/.qoder/logs/requests_$(date +%F).jsonl
 
 # 4) CA 问题（§2 第 1 条）：确认 NODE_EXTRA_CA_CERTS 指向的证书文件存在
 ls -l ~/.qoder/plugins/ca/sigmob-root.crt
+
+# 5) 凭据文件（§2 第 11 条，统一分发包模式）：存在且两个字段齐全
+ls -l ~/.qoder/log-credentials.json && cat ~/.qoder/log-credentials.json
+# 若 logger-error.log 出现 "credentials file unusable" 诊断，按提示修复文件
 ```
 
-判定：本地有行数 + outbox 堆积 + logger-error 有 TLS 报错 → CA 证书问题；本地零行 → hook 未安装/未触发（查 `hooks.json` 是否注入个性化 env）。
+判定：本地有行数 + outbox 堆积 + logger-error 有 TLS 报错 → CA 证书问题；本地有行数 + outbox 堆积 + logger-error 有 credentials 诊断 → 凭据文件损坏/缺字段；本地有行数 + outbox 空但 Server 无接收 → 凭据文件缺失（静默仅本地模式，IT 未下发）；本地零行 → hook 未安装/未触发（统一包场景同时确认凭据文件是否已下发）。
 
 ---
 
