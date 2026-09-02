@@ -41,7 +41,7 @@ graph LR
 
 ### 1.2 Server 写账号 RAM 策略（完整 JSON）
 
-账号：`qoder-log-writer`（仅 Server 使用，AK 由 `OSS_AK_ID`/`OSS_AK_SECRET` 环境变量注入，见 §3.3）。
+账号：`qoder-log-writer`（仅 Server 使用，AK 由 `OSS_AK_ID`/`OSS_AK_SECRET` 环境变量注入，见 §3.3；若走 ECS 实例 RAM 角色的免 AK/SK 模式，则把同一策略 JSON 绑定到实例角色而非子账号，见 §3.3 的 `instance-profile`）。
 
 ```json
 {
@@ -170,6 +170,8 @@ oss:
   bucket: <公司共享日志Bucket>          # §1 申请的共享 Bucket 名
   prefix: logs/qoder/v1/                # 业务前缀，勿改（三方契约，见 docs/oss-path-spec.md）
   endpoint: oss-cn-beijing.aliyuncs.com # 与 Bucket 同地域的内网 Endpoint
+  credential-mode: static               # static | sts | instance-profile（凭证模式，见下表）
+  instance-role-name: <ECS实例角色名>     # credential-mode=instance-profile 时必填
   mode: oss                             # oss=直传生产模式 | file=联调模式（写到本地目录模拟 OSS）
   encryption: kms                       # none | aes256 | kms；默认 none，生产必须显式配 kms（见 §3.5 第 6 项）
   kms-key-id: <专属CMK的key-id>          # encryption=kms 时必填（§1.2 申请的专属 CMK）
@@ -190,9 +192,17 @@ audit:
 | `oss.endpoint` | 生产用同地域内网 Endpoint（免流量费、低延迟）；跨机房部署时按网络团队建议调整 |
 | `oss.mode` | `oss` 为生产；`file` 用于无 OSS 环境联调（写入 `oss.file-storage-dir` 指定的本地目录模拟 OSS）。客户端侧联调桩另用 `tools/mock-log-server.js --port 8080 --out ./mock-out`（注意两者角色不同：mock-log-server 模拟的是收包 Server，file 模式模拟的是 Server 身后的 OSS） |
 | `oss.encryption` / `oss.kms-key-id` | 对象服务端加密。**代码默认 `none`（明文）**，生产必须显式配置 `encryption: kms` 并填写 `kms-key-id`（§1.2 的专属 CMK）；`encryption: kms` 但 `kms-key-id` 为空时 Server 启动即失败（fail-fast） |
-| AK/SK | **不走配置文件**。通过环境变量注入：`OSS_AK_ID`（§1.2 writer 账号 AK）、`OSS_AK_SECRET`。由 systemd `EnvironmentFile` 提供（见 §3.4），文件权限 600，不入 Git、不入制品库 |
+| `oss.credential-mode` | 凭证模式：`static`（默认，静态 AK/SK）/ `sts`（显式 STS 临时凭证三件套，进程内不自动轮换，仅适合受控短时联调）/ `instance-profile`（ECS 实例 RAM 角色，零 AK/SK，STS 临时凭证自动获取与轮转，**有免 AK/SK 要求时选此项**） |
+| `oss.instance-role-name` | `credential-mode=instance-profile` 时必填：ECS 实例绑定的 RAM 角色名（控制台实例详情可见）；启动时即拉取一次凭证做 fail-fast 校验 |
+| AK/SK（仅 `static` 模式） | **不走配置文件**。通过环境变量注入：`OSS_AK_ID`（§1.2 writer 账号 AK）、`OSS_AK_SECRET`（sts 模式另需 `OSS_STS_TOKEN`）。由 systemd `EnvironmentFile` 提供（见 §3.4），文件权限 600，不入 Git、不入制品库；`instance-profile` 模式下两者留空即可 |
 
 > `api-keys.yml` 热加载周期固定为 5 分钟（`ApiKeyRegistry` 的 `@Scheduled(fixedDelay = 300_000)`，不可配置），无需也无法通过配置项调整。
+
+> **免 AK/SK 部署（ECS 实例 RAM 角色，即 STS 临时凭证方案）**：
+> ① 在 ECS 控制台为目标实例绑定 RAM 角色，角色策略即 §1.2 的 JSON（Resource 仍限定 `logs/qoder/*`）；
+> ② 配置 `OSS_CREDENTIAL_MODE=instance-profile` + `OSS_INSTANCE_ROLE_NAME=<角色名>`，`OSS_AK_ID`/`OSS_AK_SECRET` 留空（等价于其他服务的“S3 AK/SK 留空走 IAM 认证”）；
+> ③ Server 启动即从实例元数据服务（100.100.100.200）拉取 STS 临时凭证并打 INFO 日志（含到期时间），SDK 到期前自动轮转，零轮值运维；角色未绑定/角色名写错/元数据不可达时**启动即失败**（fail-fast），不会默默进死信；
+> ④ 注意：容器内进程默认可达元数据服务；`sts` 模式的令牌由环境变量静态注入，进程无法自动轮换，仅用于受控短时运行。
 
 ### 3.4 systemd 单元
 
@@ -208,7 +218,7 @@ Wants=network-online.target
 Type=simple
 User=qoderlog
 Group=qoderlog
-EnvironmentFile=/etc/qoder-log-server/server.env    # 内容：OSS_AK_ID=... OSS_AK_SECRET=...
+EnvironmentFile=/etc/qoder-log-server/server.env    # 内容：OSS_AK_ID=... OSS_AK_SECRET=...（或 instance-profile 模式：OSS_CREDENTIAL_MODE/OSS_INSTANCE_ROLE_NAME，见 §3.3）
 ExecStart=/usr/bin/java -Xms1g -Xmx3g \
   -XX:+UseG1GC \
   -jar /opt/qoder-log-server/qoder-log-server.jar
@@ -266,7 +276,7 @@ curl -s http://127.0.0.1:8080/actuator/health   # {"status":"UP"}
 ```bash
 cd server
 
-# 1) 环境变量：从模板创建并填写（OSS Bucket/Endpoint/AK/SK，必填项缺失 compose 会拒绝启动）
+# 1) 环境变量：从模板创建并填写（OSS Bucket/Endpoint/凭证；Bucket/Endpoint 缺失 compose 拒绝启动，凭证由应用按 credential-mode 校验）
 cp .env.example .env && vi .env
 chmod 600 .env                       # 含凭证，权限收紧、不入 Git
 
@@ -301,7 +311,7 @@ curl -s http://127.0.0.1:8080/api/health                              # "storage
 | --- | --- | --- |
 | spool 数据卷 | named volume `qoder-spool`（默认在 Docker 数据根目录下） | `docker volume inspect qoder-spool` 查看 Mountpoint；迁移/备份直接备该目录（停机后） |
 | Key 注册表 | `./config/api-keys.yml`（容器内 `/etc/qoder-log-server/api-keys.yml`，**只读**挂载） | 热加载周期同 §4.3（5 分钟）；容器内不可写，防止运行期被篡改 |
-| AK/SK | `./.env` → 容器环境变量 `OSS_AK_ID`/`OSS_AK_SECRET` | 文件权限 600，**不入 Git**（`.gitignore` 应含 `.env`）；`.dockerignore` 已确保其不进镜像 |
+| OSS 凭证 | `./.env` → 容器环境变量 `OSS_CREDENTIAL_MODE`/`OSS_AK_ID`/`OSS_AK_SECRET`/`OSS_STS_TOKEN`/`OSS_INSTANCE_ROLE_NAME` | 文件权限 600，**不入 Git**（`.gitignore` 应含 `.env`）；`.dockerignore` 已确保其不进镜像；`instance-profile` 模式零 AK/SK，仅需实例角色名（§3.3） |
 | 容器内路径约定 | `/opt/qoder-log-server/app.jar`、`/data/spool`、`/etc/qoder-log-server/` | spool/配置/应用三分离，与 compose 挂载一一对应 |
 
 #### 3.6.5 容器级验收（对应 §3.5）

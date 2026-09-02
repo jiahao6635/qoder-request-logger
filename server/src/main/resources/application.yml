@@ -39,6 +39,8 @@ oss:
   endpoint: https://oss-cn-beijing.aliyuncs.com   # Aliyun OSS endpoint
   bucket: sigmob-qoder-logs            # bucket 名
   prefix: logs/qoder/v1                # 对象 key 前缀
+  credential-mode: static              # 凭证模式：static | sts | instance-profile（env OSS_CREDENTIAL_MODE，见 runbook §3.3）
+  instance-role-name: ""               # instance-profile 模式必填：ECS 实例绑定的 RAM 角色名（env OSS_INSTANCE_ROLE_NAME）
   encryption: none                     # none | aes256 | kms（kms 需配 kms-key-id）
   kms-key-id: ""                       # SSE-KMS 的 CMK id，encryption=kms 时必填
   file-storage-dir: ./oss-storage      # file 模式的存储根目录
